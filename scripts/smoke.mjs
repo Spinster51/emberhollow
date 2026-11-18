@@ -699,6 +699,31 @@ check('re-roll costs Cult Ash, changes one affix and never duplicates a stat', c
 check('items saved before upgrades (no plus field) still work', cr.oldSave);
 check('the workbench panel selects and upgrades items', cr.uiSelected && cr.uiUp);
 
+// ================================================================ sound and settings (milestone 7)
+const snd = await run(() => {
+  const g = window.game;
+  const out = {};
+  const names = ['swing', 'hit', 'crit', 'block', 'parry', 'roll', 'hurt', 'death', 'pickup', 'levelUp', 'chest', 'craft', 'ui', 'error'];
+  try {
+    for (const n of names) window.sound.sound.play(n);
+    out.played = true;
+  } catch (e) {
+    out.played = String(e);
+  }
+  const read = () => JSON.parse(localStorage.getItem('emberhollow.settings') ?? '{}');
+  g.setSound(0.3, true);
+  out.muted = read().muted === true && read().volume === 0.3;
+  g.setSound(0.6, false);
+  out.unmuted = read().muted === false;
+  g.setPixelScale(0.75);
+  out.pixel = read().pixelScale === 0.75;
+  g.setPixelScale(0.5);
+  return out;
+});
+check('every sound effect plays without errors', snd.played === true, String(snd.played));
+check('sound volume and mute are saved between visits', snd.muted && snd.unmuted, JSON.stringify(snd));
+check('pixel scale is saved in the same settings', snd.pixel);
+
 // ================================================================ classes (milestone 4)
 await run(() => {
   // New character of a class at the spawn; one enemy `dist` m ahead (frozen unless asked).

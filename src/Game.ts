@@ -20,19 +20,10 @@ import { Skills, type SkillContext } from './classes/Skills';
 import type { Enemy } from './combat/Enemy';
 import { Adventure } from './game/Adventure';
 import { MapView } from './ui/MapView';
+import { loadSettings, saveSettings, type Settings } from './core/settings';
+import { sound } from './core/sound';
 
 const STEP = 1 / 60;
-const PIXEL_KEY = 'emberhollow.pixelScale';
-
-function loadPixelScale(): number {
-  try {
-    const v = Number(localStorage.getItem(PIXEL_KEY));
-    if (v > 0 && v <= 1) return v;
-  } catch {
-    /* storage unavailable */
-  }
-  return 0.5;
-}
 
 export class Game {
   readonly renderer: THREE.WebGLRenderer;
@@ -74,7 +65,10 @@ export class Game {
   interior = false;
   private accumulator = 0;
   private last = performance.now();
-  private pixelScale = loadPixelScale();
+  readonly settings: Settings = loadSettings();
+  private pixelScale = this.settings.pixelScale;
+  private lastLevel = 0;
+  private lastState = '';
   /** In manual mode (tests) the loop does not simulate on its own; call `step`. */
   manual = false;
 
@@ -149,18 +143,47 @@ export class Game {
     this.interactSources.push(() => this.adventure.interactables());
     this.map = new MapView(hudRoot, this);
 
+    sound.setVolume(this.settings.volume);
+    sound.setMuted(this.settings.muted);
     window.addEventListener('resize', () => this.resize());
     this.resize();
   }
 
   setPixelScale(s: number): void {
     this.pixelScale = s;
-    try {
-      localStorage.setItem(PIXEL_KEY, String(s));
-    } catch {
-      /* storage unavailable */
-    }
+    this.settings.pixelScale = s;
+    saveSettings(this.settings);
     this.resize();
+  }
+
+  /** Change sound settings and remember them. */
+  setSound(volume: number, muted: boolean): void {
+    this.settings.volume = volume;
+    this.settings.muted = muted;
+    sound.setVolume(volume);
+    sound.setMuted(muted);
+    saveSettings(this.settings);
+  }
+
+  /** Plays one sound per combat result, the loot feed, level-ups, rolls and death. */
+  private playEvents(): void {
+    for (const f of this.fx) {
+      if (f.dot) continue;
+      if (f.target === 'enemy') {
+        if (f.result === 'hit') sound.play(f.crit ? 'crit' : 'hit');
+        else if (f.result === 'blocked' || f.result === 'parried') sound.play('block');
+      } else if (f.result === 'hit') sound.play('hurt');
+      else if (f.result === 'blocked') sound.play('block');
+      else if (f.result === 'parried') sound.play('parry');
+    }
+    if (this.loot.feed.length) sound.play('pickup');
+    const p = this.player;
+    // A jump of one or two levels is a kill; a bigger one is a loaded save.
+    if (p.level > this.lastLevel && this.lastLevel > 0 && p.level - this.lastLevel <= 2) sound.play('levelUp');
+    this.lastLevel = p.level;
+    if (p.state === 'roll' && this.lastState !== 'roll') sound.play('roll');
+    if (p.state === 'dead' && this.lastState !== 'dead') sound.play('death');
+    this.lastState = p.state;
   }
 
   private resize(): void {
@@ -220,6 +243,7 @@ export class Game {
     }
     this.skills.update(STEP, ctx);
     p.update(STEP, this.input, this.cam.yaw, target ? target.pos : null);
+    if (p.strike) sound.play('swing');
     if (p.strike?.projectile) {
       // Mage bolt from the staff toward the aim point.
       const from = p.pos.clone().add(new THREE.Vector3(0, 1.4, 0)).addScaledVector(p.facingVector(), 0.7);
@@ -414,6 +438,7 @@ export class Game {
     this.sun.position.set(p.x + 30, p.y + 60, p.z + 20);
     this.sun.target.position.copy(p);
     this.hud.update(this.player, this.camera, dt, this.input.pointerLocked || this.manual);
+    this.playEvents();
     this.hud.updateCombat(this.camera, this.enemies.list, target, this.fx, dt);
     this.hud.updateLoot(this.focus, this.loot.feed, this.player.inv.gold, dt);
     this.loot.feed.length = 0;

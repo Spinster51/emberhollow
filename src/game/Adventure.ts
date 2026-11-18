@@ -8,6 +8,7 @@ import { Dialog } from '../ui/Dialog';
 import { SlotSelect } from '../ui/SlotSelect';
 import { SaveStore, emptyAccount, exportFile, importFile, SAVE_VERSION, type AccountSave, type CharSave } from '../save/Save';
 import { bumpUid, rollItem, type Item, type Rarity } from '../items/items';
+import { sound } from '../core/sound';
 import type { Interactable } from '../loot/Loot';
 import { buildFurniture, FURNITURE } from '../home/furniture';
 import type { ClassId } from '../classes/classes';
@@ -299,6 +300,7 @@ export class Adventure {
     if (this.chests.opened.has(c.id)) return;
     this.chests.opened.add(c.id);
     this.chests.sync();
+    sound.play('chest');
     const level = Math.max(g.world.regionAt(c.x, c.z).level, Math.min(p.level, 15));
     let rarity: Rarity | undefined;
     if (c.tier >= 1) {

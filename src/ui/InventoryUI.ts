@@ -3,6 +3,7 @@ import {
   type Item, type Slot, type StatKey,
 } from '../items/items';
 import type { Derived, Inventory } from '../items/Inventory';
+import { sound } from '../core/sound';
 import { CRAFT_MATERIAL, missing, reroll, rerollCost, salvage, salvageAmount, upgrade, upgradeCost, type Cost } from '../items/crafting';
 
 /** A display spot in the home base (weapon mount or armour stand). */
@@ -79,6 +80,7 @@ export class InventoryUI {
   }
 
   open(mode: Mode): void {
+    sound.play('ui');
     this.mode = mode;
     this.renderedVersion = -1;
     this.panel.style.display = '';
@@ -164,6 +166,7 @@ export class InventoryUI {
   salvageAt(i: number): boolean {
     const r = salvage(this.inv, i);
     if (r.error) return this.fail(r.error);
+    sound.play('craft');
     if (this.selected && !this.inv.bag.includes(this.selected) && !Object.values(this.inv.equipped).includes(this.selected)) this.selected = null;
     this.toast(`Salvaged into ${r.gained}.`);
     return true;
@@ -174,6 +177,7 @@ export class InventoryUI {
     if (!this.selected) return this.fail('Select an item first.');
     const err = upgrade(this.inv, this.selected);
     if (err) return this.fail(err);
+    sound.play('craft');
     this.toast(`${this.selected.name} upgraded.`);
     return true;
   }
@@ -183,11 +187,13 @@ export class InventoryUI {
     if (!this.selected) return this.fail('Select an item first.');
     const err = reroll(this.inv, this.selected, rand);
     if (err) return this.fail(err);
+    sound.play('craft');
     this.toast(`Re-rolled: ${this.selected.name}.`);
     return true;
   }
 
   private fail(msg: string): false {
+    sound.play('error');
     this.toast(msg);
     return false;
   }
