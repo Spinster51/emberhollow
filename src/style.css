@@ -912,3 +912,15 @@ body {
 }
 .craft-btn:hover:not(:disabled) { background: #4d3a26; }
 .craft-btn:disabled { opacity: 0.45; cursor: default; }
+
+/* Settings panel (O) */
+.settings-panel { width: 340px; }
+.set-body { padding: 4px 4px 10px; }
+.set-row { display: flex; gap: 8px; align-items: center; margin: 6px 0 4px; }
+.set-row .craft-btn { flex: 1; text-align: center; }
+.craft-btn.on { border-color: #ffb060; background: #5a4128; }
+.set-row input[type=range] { flex: 1; }
+.set-val { min-width: 48px; text-align: right; color: #c8b89a; }
+.set-mute { white-space: nowrap; color: #c8b89a; }
+.set-note { width: auto; }
+.set-keys { color: #9c8a6c; line-height: 1.6; font-size: 12px; }

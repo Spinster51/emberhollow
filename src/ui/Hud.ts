@@ -13,7 +13,7 @@ Shift tap: dodge-roll · hold: sprint
 Left click: attack (click again mid-swing = combo)
 Right click: block, parry (mage: aim) · 1–4 skills
 Tab / middle click: lock-on · flick mouse to switch
-E pick up / use · I inventory · K skills · M map
+E pick up / use · I inventory · K skills · M map · O settings
 Walk into a wall to climb · H hide help`;
 
 interface FloatText {
@@ -23,7 +23,7 @@ interface FloatText {
   drift: number;
 }
 
-/** DOM overlay: HP, stamina wheel next to the player, debug, help and settings. */
+/** DOM overlay: HP, stamina wheel next to the player, debug and help. */
 export class Hud {
   private hpFill: HTMLDivElement;
   private hpText: HTMLSpanElement;
@@ -57,11 +57,7 @@ export class Hud {
   private crosshair!: HTMLDivElement;
   private slots: { root: HTMLDivElement; cd: HTMLDivElement; txt: HTMLSpanElement; lock: HTMLDivElement; cls: string; id: string }[] = [];
 
-  constructor(
-    root: HTMLElement,
-    onPixelScale: (scale: number) => void,
-    initialScale: number,
-  ) {
+  constructor(root: HTMLElement) {
     this.root = root;
     root.innerHTML = `
       <div class="panel hp"><div class="lvl" id="lvl"></div>
@@ -76,9 +72,6 @@ export class Hud {
       <div class="feed" id="feed"></div>
       <div class="panel debug" id="debug"></div>
       <div class="panel help" id="help"></div>
-      <div class="panel settings">Pixel size
-        <input id="pixel" type="range" min="1" max="4" step="1" />
-        <span id="pixel-label"></span></div>
       <svg class="stamina" id="wheel" viewBox="0 0 36 36">
         <circle cx="18" cy="18" r="14" fill="rgba(0,0,0,0.45)" stroke="#2b2b2b" stroke-width="5" />
         <circle id="wheel-arc" cx="18" cy="18" r="14" fill="none" stroke="#7be06b" stroke-width="5"
@@ -112,20 +105,6 @@ export class Hud {
     this.reticle = document.createElement('div');
     this.reticle.className = 'reticle';
     root.appendChild(this.reticle);
-
-    // Slider value = how many screen pixels make one game pixel.
-    const slider = root.querySelector<HTMLInputElement>('#pixel')!;
-    const label = root.querySelector<HTMLSpanElement>('#pixel-label')!;
-    const steps = [1, 0.5, 0.34, 0.25];
-    const idx = Math.max(0, steps.findIndex((s) => Math.abs(s - initialScale) < 0.02));
-    slider.value = String(idx + 1);
-    const apply = () => {
-      const s = steps[Number(slider.value) - 1];
-      label.textContent = s === 1 ? 'sharp' : `1/${Math.round(1 / s)}`;
-      onPixelScale(s);
-    };
-    slider.addEventListener('input', apply);
-    label.textContent = initialScale === 1 ? 'sharp' : `1/${Math.round(1 / initialScale)}`;
 
     window.addEventListener('keydown', (e) => {
       if (e.code === 'KeyH') this.help.style.display = this.help.style.display === 'none' ? '' : 'none';

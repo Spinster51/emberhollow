@@ -22,6 +22,8 @@ import { Adventure } from './game/Adventure';
 import { MapView } from './ui/MapView';
 import { loadSettings, saveSettings, type Settings } from './core/settings';
 import { sound } from './core/sound';
+import { SettingsUI } from './ui/SettingsUI';
+import type { Quality } from './core/settings';
 
 const STEP = 1 / 60;
 
@@ -51,6 +53,7 @@ export class Game {
   /** While a menu is open the world keeps running but ignores game input. */
   menuOpen = false;
   readonly ui: InventoryUI;
+  readonly settingsUI: SettingsUI;
   readonly charUI: CharacterUI;
   readonly classSelect: ClassSelect;
   readonly home: Home;
@@ -113,7 +116,12 @@ export class Game {
       blast: (at, r, color) => this.projectiles.blast(at, r, color),
     };
     this.cam = new ThirdPersonCamera(this.camera, this.world);
-    this.hud = new Hud(hudRoot, (s) => this.setPixelScale(s), this.pixelScale);
+    this.hud = new Hud(hudRoot);
+    this.settingsUI = new SettingsUI(hudRoot, this.settings, {
+      setQuality: (q) => this.setQuality(q),
+      setPixel: (s) => this.setPixelScale(s),
+      setSound: (v, m) => this.setSound(v, m),
+    }, () => this.updateMenus());
     this.ui = new InventoryUI(
       hudRoot,
       this.player.inv,
@@ -145,6 +153,7 @@ export class Game {
 
     sound.setVolume(this.settings.volume);
     sound.setMuted(this.settings.muted);
+    this.applyQuality(this.settings.quality);
     window.addEventListener('resize', () => this.resize());
     this.resize();
   }
@@ -154,6 +163,22 @@ export class Game {
     this.settings.pixelScale = s;
     saveSettings(this.settings);
     this.resize();
+  }
+
+  /** Graphics preset: shadows and their resolution. Remembered. */
+  setQuality(q: Quality): void {
+    this.settings.quality = q;
+    this.applyQuality(q);
+    saveSettings(this.settings);
+  }
+
+  private applyQuality(q: Quality): void {
+    const cfg = { low: { shadows: false, map: 512 }, medium: { shadows: true, map: 1024 }, high: { shadows: true, map: 2048 } }[q];
+    this.renderer.shadowMap.enabled = cfg.shadows;
+    this.sun.castShadow = cfg.shadows;
+    this.sun.shadow.mapSize.set(cfg.map, cfg.map);
+    this.sun.shadow.map?.dispose();
+    this.sun.shadow.map = null;
   }
 
   /** Change sound settings and remember them. */
@@ -341,7 +366,7 @@ export class Game {
   updateMenus(): void {
     const a = this.adventure;
     this.menuOpen =
-      this.ui.isOpen || this.charUI.isOpen || this.classSelect.visible ||
+      this.ui.isOpen || this.charUI.isOpen || this.settingsUI.isOpen || this.classSelect.visible ||
       !!a && (a.dialog.isOpen || a.slotSelect.visible) || this.hud.mapOpen;
     if (this.menuOpen) document.exitPointerLock?.();
   }

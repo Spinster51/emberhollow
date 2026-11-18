@@ -724,6 +724,40 @@ check('every sound effect plays without errors', snd.played === true, String(snd
 check('sound volume and mute are saved between visits', snd.muted && snd.unmuted, JSON.stringify(snd));
 check('pixel scale is saved in the same settings', snd.pixel);
 
+// Settings panel: O opens it, presets switch shadows, sliders save, Esc closes.
+const set = await run(() => {
+  const g = window.game;
+  const out = {};
+  const key = (code) => window.dispatchEvent(new KeyboardEvent('keydown', { code }));
+  const read = () => JSON.parse(localStorage.getItem('emberhollow.settings') ?? '{}');
+  const btn = (t) => [...document.querySelectorAll('.settings-panel .craft-btn')].find((b) => b.textContent === t);
+  key('KeyO');
+  out.open = g.settingsUI.isOpen && g.menuOpen;
+  out.labels = [...document.querySelectorAll('.settings-panel .craft-btn')].map((b) => b.textContent).join(',');
+  btn('Low').click();
+  out.low = g.renderer.shadowMap.enabled === false && g.sun.castShadow === false && read().quality === 'low';
+  btn('Medium').click();
+  out.medium = g.renderer.shadowMap.enabled === true && g.sun.shadow.mapSize.x === 1024 && read().quality === 'medium';
+  btn('High').click();
+  out.high = g.sun.shadow.mapSize.x === 2048 && read().quality === 'high';
+  const ranges = () => [...document.querySelectorAll('.settings-panel input[type=range]')];
+  ranges()[0].value = '3';
+  ranges()[0].dispatchEvent(new Event('input'));
+  out.pixel = Math.abs(g.pixelScale - 0.34) < 1e-6 && Math.abs(read().pixelScale - 0.34) < 1e-6;
+  ranges()[0].value = '2';
+  ranges()[0].dispatchEvent(new Event('input'));
+  ranges()[1].value = '30';
+  ranges()[1].dispatchEvent(new Event('input'));
+  out.volume = read().volume === 0.3;
+  key('Escape');
+  out.closed = !g.settingsUI.isOpen && !g.menuOpen;
+  return out;
+});
+check('O opens the settings panel and pauses the game', set.open, set.labels);
+check('graphics presets switch shadows and their resolution, and are saved', set.low && set.medium && set.high, JSON.stringify(set));
+check('pixel size and volume sliders apply and save', set.pixel && set.volume);
+check('Esc closes the settings panel', set.closed);
+
 // ================================================================ classes (milestone 4)
 await run(() => {
   // New character of a class at the spawn; one enemy `dist` m ahead (frozen unless asked).
