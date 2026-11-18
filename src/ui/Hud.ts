@@ -1,12 +1,24 @@
 import * as THREE from 'three';
 import { TUNING } from '../config';
 import type { Player } from '../player/Player';
+import type { Enemy } from '../combat/Enemy';
+import type { CombatFx } from '../combat/combat';
 
 const HELP = `WASD  move        Mouse  look / scroll zoom
 Space jump · climb-jump · open/close glider
       (on a wall + S: jump off)
 Shift tap: dodge-roll · hold: sprint
+Left click: attack (click again mid-swing = combo)
+Right click: block (block just in time = parry)
+Tab / middle click: lock-on · flick mouse to switch
 Walk into a wall to climb · H hide help`;
+
+interface FloatText {
+  el: HTMLDivElement;
+  pos: THREE.Vector3;
+  age: number;
+  drift: number;
+}
 
 /** DOM overlay: HP, stamina wheel next to the player, debug, help and settings. */
 export class Hud {
@@ -20,12 +32,17 @@ export class Hud {
   private toast: HTMLDivElement;
   private toastTime = 0;
   private fps = 60;
+  private root: HTMLElement;
+  private floats: FloatText[] = [];
+  private bars = new Map<Enemy, HTMLDivElement>();
+  private reticle: HTMLDivElement;
 
   constructor(
     root: HTMLElement,
     onPixelScale: (scale: number) => void,
     initialScale: number,
   ) {
+    this.root = root;
     root.innerHTML = `
       <div class="panel hp"><span>HP <span id="hp-text"></span></span><div class="bar"><div id="hp-fill"></div></div></div>
       <div class="panel debug" id="debug"></div>
@@ -49,6 +66,9 @@ export class Hud {
     this.wheelArc = root.querySelector('#wheel-arc')!;
     this.prompt = root.querySelector('#prompt')!;
     this.toast = root.querySelector('#toast')!;
+    this.reticle = document.createElement('div');
+    this.reticle.className = 'reticle';
+    root.appendChild(this.reticle);
 
     // Slider value = how many screen pixels make one game pixel.
     const slider = root.querySelector<HTMLInputElement>('#pixel')!;
@@ -77,7 +97,10 @@ export class Hud {
       `fps   ${this.fps.toFixed(0)}\n` +
       `state ${p.state}\n` +
       `pos   ${p.pos.x.toFixed(1)}, ${p.pos.y.toFixed(1)}, ${p.pos.z.toFixed(1)}\n` +
-      `stam  ${p.stamina.toFixed(0)}${p.exhausted ? ' (exhausted)' : ''}`;
+      `stam  ${p.stamina.toFixed(0)}${p.exhausted ? ' (exhausted)' : ''}\n` +
+      `poise ${p.poise.value.toFixed(0)}${p.staggerKind ? ` (${p.staggerKind})` : ''}` +
+      (p.state === 'attack' ? `\nhit   ${p.comboIndex + 1} ${p.attackPhase()}` : '') +
+      (p.blocking ? '\nblocking' : '');
 
     // Stamina wheel beside the player; hidden when full.
     const full = p.stamina >= TUNING.stamina.max - 0.01 && !p.exhausted;
@@ -98,5 +121,70 @@ export class Hud {
     }
     this.toastTime -= dt;
     this.toast.style.opacity = this.toastTime > 0 ? '1' : '0';
+  }
+
+  /** Floating damage numbers, enemy health bars and the lock-on reticle. */
+  updateCombat(camera: THREE.Camera, enemies: Enemy[], target: Enemy | null, fx: CombatFx[], dt: number): void {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const toScreen = (v: THREE.Vector3) => {
+      const s = v.clone().project(camera);
+      return { x: (s.x * 0.5 + 0.5) * w, y: (-s.y * 0.5 + 0.5) * h, visible: s.z < 1 && s.z > -1 };
+    };
+
+    for (const f of fx) {
+      const el = document.createElement('div');
+      let text = f.amount > 0 ? String(f.amount) : '';
+      let cls = f.target === 'player' ? 'dmg player' : 'dmg';
+      if (f.result === 'dodged') (text = 'dodge'), (cls += ' note');
+      else if (f.result === 'parried') (text = 'PARRY!'), (cls += ' big');
+      else if (f.result === 'blocked') text = `${text} blocked`;
+      if (f.stagger && f.target === 'enemy') cls += ' big';
+      if (f.stagger) text += ` ${f.stagger}`;
+      el.className = cls;
+      el.textContent = text;
+      this.root.appendChild(el);
+      this.floats.push({ el, pos: f.pos.clone(), age: 0, drift: (Math.random() - 0.5) * 30 });
+    }
+    this.floats = this.floats.filter((f) => {
+      f.age += dt;
+      if (f.age > 0.9) {
+        f.el.remove();
+        return false;
+      }
+      const s = toScreen(f.pos);
+      f.el.style.left = `${s.x + f.drift * f.age}px`;
+      f.el.style.top = `${s.y - f.age * 60}px`;
+      f.el.style.opacity = String(Math.min(1, (0.9 - f.age) * 4));
+      f.el.style.display = s.visible ? '' : 'none';
+      return true;
+    });
+
+    // Enemy health bars: shown while locked on or recently hit.
+    for (const e of enemies) {
+      let bar = this.bars.get(e);
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.className = 'ebar';
+        bar.innerHTML = '<div></div>';
+        this.root.appendChild(bar);
+        this.bars.set(e, bar);
+      }
+      const show = e.alive && (e === target || e.sinceHit < 4 || e.hp < e.stats.hp);
+      const s = toScreen(e.pos.clone().setY(e.topY() + 0.35));
+      bar.style.opacity = show && s.visible ? '1' : '0';
+      bar.style.left = `${s.x}px`;
+      bar.style.top = `${s.y}px`;
+      (bar.firstChild as HTMLDivElement).style.width = `${(e.hp / e.stats.hp) * 100}%`;
+    }
+
+    if (target) {
+      const s = toScreen(target.centre());
+      this.reticle.style.display = s.visible ? '' : 'none';
+      this.reticle.style.left = `${s.x}px`;
+      this.reticle.style.top = `${s.y}px`;
+    } else {
+      this.reticle.style.display = 'none';
+    }
   }
 }

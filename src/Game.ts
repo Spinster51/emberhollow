@@ -5,6 +5,10 @@ import { Player } from './player/Player';
 import { PlayerModel } from './player/PlayerModel';
 import { ThirdPersonCamera } from './camera/ThirdPersonCamera';
 import { Hud } from './ui/Hud';
+import { Enemies } from './combat/Enemies';
+import { LockOn } from './combat/LockOn';
+import type { CombatFx } from './combat/combat';
+import { TUNING } from './config';
 
 const STEP = 1 / 60;
 const PIXEL_KEY = 'emberhollow.pixelScale';
@@ -29,6 +33,12 @@ export class Game {
   readonly model = new PlayerModel();
   readonly cam: ThirdPersonCamera;
   readonly hud: Hud;
+  readonly enemies: Enemies;
+  readonly lockOn = new LockOn();
+  /** Hit feedback produced this frame, shown by the HUD. */
+  readonly fx: CombatFx[] = [];
+  /** Remaining frames of hit-stop (the whole simulation freezes briefly on a hit). */
+  hitStop = 0;
   private sun: THREE.DirectionalLight;
   private accumulator = 0;
   private last = performance.now();
@@ -62,6 +72,8 @@ export class Game {
     this.scene.add(this.world.group);
     this.player = new Player(this.world);
     this.scene.add(this.model.root);
+    this.enemies = new Enemies(this.world);
+    this.scene.add(this.enemies.group);
     this.cam = new ThirdPersonCamera(this.camera, this.world);
     this.hud = new Hud(hudRoot, (s) => this.setPixelScale(s), this.pixelScale);
 
@@ -111,7 +123,37 @@ export class Game {
 
   private simulate(): void {
     this.input.update();
-    this.player.update(STEP, this.input, this.cam.yaw);
+    const p = this.player;
+    if (this.hitStop > 0) {
+      // Frozen for a few frames; still remember button presses.
+      this.hitStop--;
+      p.readInput(this.input, STEP);
+      this.input.endStep();
+      return;
+    }
+
+    if (this.input.consumePress('lockOn')) this.lockOn.toggle(p, this.enemies.list, this.cam.yaw);
+    this.lockOn.update(p, STEP);
+    const target = this.lockOn.target;
+    if (target) this.cam.followLock(p.pos, target.pos, STEP);
+
+    p.update(STEP, this.input, this.cam.yaw, target ? target.pos : null);
+    if (p.strike) {
+      const hits = this.enemies.applyStrike(p.strike, p, this.fx);
+      if (hits > 0) {
+        const heavy = p.strike.index === TUNING.combat.combo.length - 1;
+        this.hitStop = heavy ? TUNING.combat.hitStop.heavy : TUNING.combat.hitStop.light;
+        this.cam.addTrauma(heavy ? 0.35 : 0.2);
+      }
+    }
+    this.enemies.update(STEP, p);
+
+    for (const f of p.fx) {
+      this.fx.push(f);
+      if (f.result === 'hit' || f.result === 'blocked') this.cam.addTrauma(f.stagger ? 0.5 : 0.3);
+      if (f.result === 'parried') this.hitStop = TUNING.combat.hitStop.heavy;
+    }
+    p.fx.length = 0;
     this.input.endStep();
   }
 
@@ -124,13 +166,19 @@ export class Game {
   }
 
   private render(dt: number): void {
-    this.cam.update(this.player.pos, this.input.takeLook(), dt);
+    const look = this.input.takeLook();
+    const target = this.lockOn.target;
+    if (target) this.lockOn.flick(look.dx, this.player, this.enemies.list);
+    this.cam.update(this.player.pos, look, dt, target ? target.centre() : null);
     this.model.update(this.player, dt);
+    this.enemies.updateModels(dt);
     // Keep the shadow area centred on the player.
     const p = this.player.pos;
     this.sun.position.set(p.x + 30, p.y + 60, p.z + 20);
     this.sun.target.position.copy(p);
     this.hud.update(this.player, this.camera, dt, this.input.pointerLocked || this.manual);
+    this.hud.updateCombat(this.camera, this.enemies.list, target, this.fx, dt);
+    this.fx.length = 0;
     this.renderer.render(this.scene, this.camera);
   }
 }

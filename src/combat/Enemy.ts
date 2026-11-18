@@ -1,0 +1,330 @@
+import * as THREE from 'three';
+import { TUNING, type EnemyKind, type StaggerKind } from '../config';
+import type { World } from '../world/World';
+import type { Player } from '../player/Player';
+import { mulberry32 } from '../core/noise';
+import { Poise, inArc, type CombatFx, type Hit, type HitResult } from './combat';
+
+export type EnemyState = 'idle' | 'chase' | 'windup' | 'active' | 'recover' | 'stagger' | 'return' | 'dead';
+
+const C = TUNING.combat;
+const E = TUNING.enemies;
+const STEP_UP = 0.5;
+
+let nextId = 1;
+
+/**
+ * One enemy, run by a small state machine:
+ * idle (wander) → chase → windup → active → recover → chase …; stagger and dead interrupt;
+ * return walks home (and heals) when the player escapes past the leash.
+ *
+ * Attack styles: slime hops into you, boar charges in a straight line, bandit swings a sword
+ * in a 2-hit combo and circles you between attacks.
+ */
+export class Enemy {
+  readonly id = nextId++;
+  readonly stats: (typeof E)[EnemyKind];
+  readonly pos = new THREE.Vector3();
+  readonly vel = new THREE.Vector3();
+  readonly home = new THREE.Vector3();
+  facing = 0;
+  state: EnemyState = 'idle';
+  stateTime = 0;
+  hp: number;
+  readonly poise: Poise;
+  staggerKind: StaggerKind | null = null;
+  private staggerTime = 0;
+  private cooldown = 0;
+  private hitDone = false;
+  /** Strike number within the bandit's 2-hit combo. */
+  comboStep = 0;
+  private wander = new THREE.Vector3();
+  private wanderTimer = 0;
+  /** +1 / -1: which way the bandit circles. */
+  private circleDir = 1;
+  private chargeDir = new THREE.Vector3();
+  /** Seeded so tests are repeatable. */
+  private rand = mulberry32(this.id * 7919);
+  /** Test hook: a frozen enemy skips its AI (it can still be hit). */
+  frozen = false;
+  /** Seconds since the last hit taken (drives the HP bar). */
+  sinceHit = 99;
+
+  constructor(
+    readonly kind: EnemyKind,
+    home: THREE.Vector3,
+    private world: World,
+  ) {
+    this.stats = E[kind];
+    this.hp = this.stats.hp;
+    this.poise = new Poise(this.stats.poise);
+    this.home.copy(home);
+    this.reset();
+  }
+
+  get alive(): boolean {
+    return this.state !== 'dead';
+  }
+
+  reset(): void {
+    this.pos.copy(this.home);
+    this.pos.y = this.world.groundAt(this.pos.x, this.pos.z, 1e9);
+    this.vel.set(0, 0, 0);
+    this.hp = this.stats.hp;
+    this.poise.reset();
+    this.cooldown = 0;
+    this.sinceHit = 99;
+    this.setState('idle');
+  }
+
+  private setState(s: EnemyState): void {
+    this.state = s;
+    this.stateTime = 0;
+    this.hitDone = false;
+  }
+
+  facingVector(): THREE.Vector3 {
+    return new THREE.Vector3(-Math.sin(this.facing), 0, -Math.cos(this.facing));
+  }
+
+  /** Point a little above the feet: lock-on reticle and damage numbers. */
+  centre(): THREE.Vector3 {
+    const h = this.kind === 'bandit' ? 1.2 : this.kind === 'boar' ? 0.7 : 0.4;
+    return this.pos.clone().setY(this.pos.y + h);
+  }
+
+  topY(): number {
+    return this.pos.y + (this.kind === 'bandit' ? 2.1 : this.kind === 'boar' ? 1.3 : 0.9);
+  }
+
+  update(dt: number, player: Player): void {
+    this.stateTime += dt;
+    this.sinceHit += dt;
+    this.cooldown -= dt;
+    this.poise.update(dt);
+    const s = this.stats;
+    const toPlayer = player.pos.clone().sub(this.pos).setY(0);
+    const dist = toPlayer.length();
+    const playerReachable = player.state !== 'dead' && Math.abs(player.pos.y - this.pos.y) < 6;
+    const fromHome = Math.hypot(this.pos.x - this.home.x, this.pos.z - this.home.z);
+
+    switch (this.state) {
+      case 'idle': {
+        this.wanderTimer -= dt;
+        if (this.wanderTimer <= 0) {
+          const a = this.rand() * Math.PI * 2;
+          const r = this.rand() * 4;
+          this.wander.set(this.home.x + Math.cos(a) * r, 0, this.home.z + Math.sin(a) * r);
+          this.wanderTimer = 2 + this.rand() * 3;
+        }
+        const d = this.wander.clone().sub(this.pos).setY(0);
+        this.steer(d.length() > 0.3 ? d : null, s.speed * 0.35, dt, 4);
+        if (playerReachable && dist < s.aggro) this.setState('chase');
+        break;
+      }
+      case 'chase': {
+        if (!playerReachable || fromHome > s.leash) {
+          this.setState('return');
+          break;
+        }
+        if (dist <= s.range && this.cooldown <= 0) {
+          this.comboStep = 0;
+          this.setState('windup');
+          break;
+        }
+        if (this.kind === 'bandit' && dist < s.range + 1.5 && this.cooldown > 0) {
+          // Circle the player while waiting for the next attack.
+          if (this.rand() < dt * 0.4) this.circleDir *= -1;
+          const side = new THREE.Vector3(-toPlayer.z, 0, toPlayer.x).normalize().multiplyScalar(this.circleDir);
+          const keep = toPlayer.clone().normalize().multiplyScalar(dist - (s.range + 0.5));
+          this.steer(side.add(keep), s.speed * 0.5, dt, 0);
+          this.turnTo(toPlayer, 10, dt);
+        } else {
+          this.steer(toPlayer, s.speed, dt, 8);
+        }
+        break;
+      }
+      case 'windup': {
+        const windup = this.kind === 'bandit' && this.comboStep > 0 ? s.windup * 0.6 : s.windup;
+        this.brake(dt);
+        this.turnTo(toPlayer, this.kind === 'boar' ? 3 : 10, dt);
+        if (this.stateTime >= windup) {
+          this.chargeDir.copy(this.facingVector());
+          if (this.kind !== 'bandit') this.vel.copy(this.chargeDir).multiplyScalar(s.lunge);
+          this.setState('active');
+        }
+        break;
+      }
+      case 'active':
+        this.updateActive(dt, player, dist);
+        break;
+      case 'recover':
+        this.brake(dt);
+        if (this.stateTime >= s.recover) {
+          if (this.kind === 'bandit' && this.comboStep === 0 && dist < s.range + 0.8) {
+            this.comboStep = 1;
+            this.setState('windup');
+          } else {
+            this.cooldown = s.cooldown * (0.8 + this.rand() * 0.4);
+            this.setState('chase');
+          }
+        }
+        break;
+      case 'stagger': {
+        const k = Math.exp(-6 * dt);
+        this.vel.x *= k;
+        this.vel.z *= k;
+        this.move(dt);
+        if (this.stateTime >= this.staggerTime) {
+          this.staggerKind = null;
+          this.setState('chase');
+        }
+        break;
+      }
+      case 'return': {
+        const d = this.home.clone().sub(this.pos).setY(0);
+        this.steer(d, s.speed, dt, 8);
+        if (d.length() < 0.8) {
+          this.hp = s.hp;
+          this.poise.reset();
+          this.setState('idle');
+        } else if (playerReachable && dist < s.aggro * 0.5 && fromHome < s.leash * 0.8) {
+          this.setState('chase');
+        }
+        break;
+      }
+      case 'dead':
+        break;
+    }
+  }
+
+  private updateActive(dt: number, player: Player, dist: number): void {
+    const s = this.stats;
+    const touch = s.radius + 0.35 + 0.35;
+    if (this.kind === 'bandit') {
+      this.brake(dt);
+      if (!this.hitDone && this.stateTime >= s.active * 0.5) {
+        this.hitDone = true;
+        if (inArc(this.pos, this.facingVector(), player.pos, s.range + 0.3, 110)) this.hitPlayer(player);
+      }
+    } else {
+      // Slime hop / boar charge: keep going in a straight line, hurt on contact.
+      if (this.kind === 'slime') {
+        this.vel.x *= Math.exp(-3 * dt);
+        this.vel.z *= Math.exp(-3 * dt);
+      } else {
+        this.vel.copy(this.chargeDir).multiplyScalar(s.lunge);
+      }
+      const blocked = this.move(dt);
+      if (!this.hitDone && dist < touch) {
+        this.hitDone = true;
+        const r = this.hitPlayer(player);
+        if (this.kind === 'boar' && r !== 'dodged') {
+          this.vel.set(0, 0, 0);
+          this.setState('recover');
+          return;
+        }
+      }
+      if (blocked && this.kind === 'boar') {
+        // Ran into a wall: dazed.
+        this.vel.set(0, 0, 0);
+        this.stagger({ kind: 'dazed', time: 0.75 });
+        return;
+      }
+    }
+    if (this.stateTime >= s.active) this.setState('recover');
+  }
+
+  private hitPlayer(player: Player): HitResult {
+    const s = this.stats;
+    const r = player.takeHit({ damage: s.damage, poise: s.poiseDamage, knockback: s.knockback, from: this.pos.clone() });
+    if (r === 'parried') {
+      // A parry cancels the hit and leaves the attacker open.
+      this.vel.set(0, 0, 0);
+      this.stagger({ kind: 'interrupted', time: 0.2 });
+    }
+    return r;
+  }
+
+  takeHit(hit: Hit, fx: CombatFx[]): HitResult {
+    if (!this.alive) return 'ignored';
+    let damage = hit.damage;
+    if (this.state === 'stagger') damage *= C.staggeredDamageBonus;
+    damage = Math.round(damage);
+    this.hp -= damage;
+    this.sinceHit = 0;
+    const st = this.poise.apply(hit.poise);
+    fx.push({ pos: this.centre(), amount: damage, target: 'enemy', result: 'hit', stagger: st?.kind ?? null });
+
+    const away = this.pos.clone().sub(hit.from).setY(0);
+    if (away.lengthSq() < 1e-6) away.set(0, 0, 1);
+    away.normalize();
+    if (this.hp <= 0) {
+      this.hp = 0;
+      this.vel.copy(away).multiplyScalar(hit.knockback);
+      this.setState('dead');
+      return 'hit';
+    }
+    if (st) {
+      this.vel.copy(away).multiplyScalar(hit.knockback);
+      this.stagger(st);
+    } else {
+      // Light hits only nudge; a charging boar keeps going.
+      if (!(this.kind === 'boar' && this.state === 'active')) this.pos.addScaledVector(away, hit.knockback * 0.04);
+      if (this.state === 'idle' || this.state === 'return') this.setState('chase');
+    }
+    return 'hit';
+  }
+
+  private stagger(st: { kind: StaggerKind; time: number }): void {
+    this.staggerKind = st.kind;
+    this.staggerTime = st.time;
+    this.setState('stagger');
+  }
+
+  // ---------------------------------------------------------------- movement
+
+  private turnTo(dir: THREE.Vector3, rate: number, dt: number): void {
+    if (dir.lengthSq() < 1e-6) return;
+    const target = Math.atan2(-dir.x, -dir.z);
+    let d = target - this.facing;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    this.facing += d * Math.min(1, rate * dt);
+  }
+
+  private brake(dt: number): void {
+    const k = Math.exp(-12 * dt);
+    this.vel.x *= k;
+    this.vel.z *= k;
+    this.move(dt);
+  }
+
+  /** Accelerate toward `dir` at `speed` (null = stop) and move; turns to face the motion. */
+  private steer(dir: THREE.Vector3 | null, speed: number, dt: number, turnRate: number): void {
+    const target = dir && dir.lengthSq() > 1e-6 ? dir.clone().normalize().multiplyScalar(speed) : new THREE.Vector3();
+    const k = 1 - Math.exp(-8 * dt);
+    this.vel.x += (target.x - this.vel.x) * k;
+    this.vel.z += (target.z - this.vel.z) * k;
+    if (turnRate > 0 && target.lengthSq() > 0.01) this.turnTo(target, turnRate, dt);
+    this.move(dt);
+  }
+
+  /** Move by vel*dt on the ground. Enemies never climb or step off cliffs. Returns true if blocked. */
+  private move(dt: number): boolean {
+    const nx = this.pos.x + this.vel.x * dt;
+    const nz = this.pos.z + this.vel.z * dt;
+    const g = this.world.groundAt(nx, nz, this.pos.y + STEP_UP);
+    const wall = this.world.terrainWall(nx, nz, this.pos.y + STEP_UP);
+    let blocked = false;
+    if (wall || g < this.pos.y - 2.5 || g > this.pos.y + STEP_UP) {
+      blocked = true;
+    } else {
+      this.pos.x = nx;
+      this.pos.z = nz;
+    }
+    if (this.world.resolveBoxes(this.pos, this.stats.radius, 1.5)) blocked = true;
+    this.world.clampToWorld(this.pos);
+    this.pos.y = this.world.groundAt(this.pos.x, this.pos.z, this.pos.y + STEP_UP);
+    return blocked;
+  }
+}

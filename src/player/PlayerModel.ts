@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { addOutline, toonMaterial } from '../core/toon';
 import type { Player } from './Player';
+import { TUNING } from '../config';
 
 /**
  * Placeholder blocky adventurer with procedural animation. Replaced by the rigged
@@ -15,6 +16,7 @@ export class PlayerModel {
   private legL = new THREE.Group();
   private legR = new THREE.Group();
   private glider = new THREE.Group();
+  private sword = new THREE.Group();
   private phase = 0;
   private gliderOpen = 0;
 
@@ -67,6 +69,17 @@ export class PlayerModel {
     limb(this.legL, -0.14, -0.12, 0.8, 0.2, pants);
     limb(this.legR, 0.14, -0.12, 0.8, 0.2, pants);
 
+    // Sword in the right hand, pointing forward along the forearm.
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 1.0), toonMaterial(0xdfe6ee));
+    blade.castShadow = true;
+    addOutline(blade, 0.03);
+    blade.position.z = -0.6;
+    const guard = box(0.3, 0.07, 0.07, toonMaterial(0xc9a13b), false);
+    guard.position.z = -0.08;
+    this.sword.add(blade, guard);
+    this.sword.position.y = -0.58;
+    this.armR.add(this.sword);
+
     // Glider: a cloth wing on two poles, held above the head.
     const cloth = new THREE.Mesh(
       new THREE.BoxGeometry(2.4, 0.05, 1.0),
@@ -103,6 +116,8 @@ export class PlayerModel {
     let armSpreadL = 0;
     let armSpreadR = 0;
     const t = performance.now() / 1000;
+    let twist = 0;
+    this.sword.visible = p.state !== 'glide' && p.state !== 'climb' && p.state !== 'climbJump';
 
     this.gliderOpen += ((p.state === 'glide' ? 1 : 0) - this.gliderOpen) * Math.min(1, dt * 10);
     this.glider.visible = this.gliderOpen > 0.05;
@@ -162,6 +177,41 @@ export class PlayerModel {
         }
         break;
       }
+      case 'attack': {
+        // Wind up (arm back) → swing across → recover. Strikes alternate sides; the 3rd is overhead.
+        const a = TUNING.combat.combo[p.comboIndex];
+        const st = p.stateTime;
+        const side = p.comboIndex === 1 ? -1 : 1;
+        let k = 0;
+        if (st < a.windup) k = -st / a.windup;
+        else if (st < a.windup + a.swing) k = (st - a.windup) / a.swing;
+        else k = 1;
+        if (p.comboIndex === 2) {
+          armR = k < 0 ? -1.2 + k * 1.9 : -3.1 + k * 3.2;
+          armL = armR * 0.6;
+          this.body.rotation.x = k < 0 ? 0.15 : -0.25 * Math.min(1, k);
+        } else {
+          armR = k < 0 ? -1.4 + k * 0.6 : -2.0 + k * 0.6;
+          armSpreadR = k < 0 ? -0.8 * -k * side : 0.9 * (k * 2 - 1) * side;
+          twist = (k < 0 ? 0.5 * -k : 0.5 - k * 1.1) * side;
+          armL = -0.4;
+        }
+        legL = 0.35;
+        legR = -0.35;
+        break;
+      }
+      case 'stagger':
+        armL = armR = 0.5;
+        armSpreadL = 0.5;
+        armSpreadR = -0.5;
+        this.body.rotation.x = p.staggerKind === 'knockdown' ? 1.2 : 0.3;
+        if (p.staggerKind === 'knockdown') this.body.position.y = 0.4;
+        break;
+      case 'dead':
+        this.body.rotation.x = Math.min(1, p.stateTime * 3) * 1.45;
+        this.body.position.y = 0.3;
+        armL = armR = 0.3;
+        break;
       case 'mantle':
         armL = armR = -2.0;
         legL = 1.2;
@@ -180,7 +230,16 @@ export class PlayerModel {
         break;
     }
 
-    const lerp = Math.min(1, dt * 18);
+    if (p.blocking) {
+      // Sword held across the body.
+      armR = -1.5;
+      armSpreadR = 0.9;
+      armL = -1.2;
+      armSpreadL = -0.6;
+    }
+    this.body.rotation.y = twist;
+
+    const lerp = Math.min(1, dt * (p.state === 'attack' ? 40 : 18));
     this.armL.rotation.x += (armL - this.armL.rotation.x) * lerp;
     this.armR.rotation.x += (armR - this.armR.rotation.x) * lerp;
     this.legL.rotation.x += (legL - this.legL.rotation.x) * lerp;

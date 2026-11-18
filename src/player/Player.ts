@@ -2,8 +2,22 @@ import * as THREE from 'three';
 import { TUNING } from '../config';
 import type { Input } from '../core/Input';
 import type { Box, WallHit, World } from '../world/World';
+import { Poise, type CombatFx, type Hit, type HitResult } from '../combat/combat';
+import type { StaggerKind } from '../config';
 
-export type MoveState = 'ground' | 'air' | 'roll' | 'climb' | 'climbJump' | 'mantle' | 'glide';
+export type MoveState =
+  | 'ground' | 'air' | 'roll' | 'climb' | 'climbJump' | 'mantle' | 'glide'
+  | 'attack' | 'stagger' | 'dead';
+
+/** A sword strike that reached its hit point this step; the game resolves it against enemies. */
+export interface Strike {
+  index: number;
+  damage: number;
+  poise: number;
+  knockback: number;
+}
+
+const C = TUNING.combat;
 
 const T = TUNING;
 
@@ -38,6 +52,24 @@ export class Player {
   // Roll data
   private rollDir = new THREE.Vector3();
 
+  // Combat data
+  readonly poise = new Poise(C.poise.max, C.poise.regen, C.poise.regenDelay);
+  /** Index into the combo of the current strike. */
+  comboIndex = 0;
+  /** Seconds left on a buffered attack press. */
+  private attackBuffer = 0;
+  private chainQueued = false;
+  private strikeDone = false;
+  /** Set on the step a strike lands; read and cleared by the game. */
+  strike: Strike | null = null;
+  blocking = false;
+  private blockTime = 0;
+  staggerKind: StaggerKind | null = null;
+  private staggerTime = 0;
+  deaths = 0;
+  /** Hit feedback for the HUD/camera; drained by the game. */
+  readonly fx: CombatFx[] = [];
+
   private airTime = 0;
   private lowestVy = 0;
   /** Seconds the player has been pushing into a low wall on the ground. */
@@ -56,11 +88,17 @@ export class Player {
     this.hp = T.maxHp;
     this.stamina = T.stamina.max;
     this.exhausted = false;
+    this.poise.reset();
+    this.blocking = false;
+    this.blockTime = 0;
+    this.strike = null;
+    this.attackBuffer = 0;
     this.setState('ground');
   }
 
   private setState(s: MoveState): void {
     if (this.state === 'air' && s !== 'air') this.airTime = 0;
+    if (s !== 'stagger') this.staggerKind = null;
     this.state = s;
     this.stateTime = 0;
   }
@@ -81,9 +119,23 @@ export class Player {
     return !this.exhausted && this.stamina >= min;
   }
 
-  update(dt: number, input: Input, camYaw: number): void {
+  /** Remember presses that must survive a few frames (also called during hit-stop). */
+  readInput(input: Input, dt: number): void {
+    if (input.consumePress('attack')) this.attackBuffer = C.buffer;
+    else this.attackBuffer = Math.max(0, this.attackBuffer - dt);
+  }
+
+  /**
+   * @param aim lock-on target position, if any. Attacks face it; otherwise they face the camera.
+   */
+  update(dt: number, input: Input, camYaw: number, aim: THREE.Vector3 | null = null): void {
     this.stateTime += dt;
     this.sinceStaminaUse += dt;
+    this.strike = null;
+    this.readInput(input, dt);
+    this.poise.update(dt);
+    this.aim = aim;
+    this.camYaw = camYaw;
 
     // Camera-relative wish direction.
     const fx = -Math.sin(camYaw);
@@ -118,19 +170,35 @@ export class Player {
       case 'glide':
         this.updateGlide(dt, input, wish);
         break;
+      case 'attack':
+        this.updateAttack(dt, input, wish);
+        break;
+      case 'stagger':
+        this.updateStagger(dt);
+        break;
+      case 'dead':
+        if (this.stateTime >= C.deathTime) this.respawn();
+        break;
+    }
+    if (this.state !== 'ground') {
+      this.blocking = false;
+      this.blockTime = 0;
     }
 
     this.world.clampToWorld(this.pos);
     this.regenStamina(dt);
     this.invulnerable =
-      this.state === 'roll' && this.stateTime < T.roll.buildup + T.roll.move;
+      this.state === 'dead' || (this.state === 'roll' && this.stateTime < T.roll.buildup + T.roll.move);
   }
+
+  private aim: THREE.Vector3 | null = null;
+  private camYaw = 0;
 
   private regenStamina(dt: number): void {
     const draining =
       this.state === 'climb' || this.state === 'glide' || this.state === 'climbJump' || this.sprinting;
     if (draining || this.sinceStaminaUse < T.stamina.regenDelay) return;
-    if (this.state !== 'ground' && this.state !== 'roll' && this.state !== 'mantle') return;
+    if (!['ground', 'roll', 'mantle', 'attack', 'stagger'].includes(this.state)) return;
     this.stamina = Math.min(T.stamina.max, this.stamina + T.stamina.regen * dt);
     if (this.exhausted && this.stamina >= T.stamina.max * T.stamina.recoverFraction) {
       this.exhausted = false;
@@ -153,14 +221,24 @@ export class Player {
       this.pos.y += 0.01;
       return;
     }
+    if (this.attackBuffer > 0 && this.canUseStamina(1)) {
+      this.startAttack(0);
+      return;
+    }
 
-    this.sprinting = moving && input.isHeld('dodge') && this.canUseStamina();
+    this.blocking = input.isHeld('block');
+    this.blockTime = this.blocking ? this.blockTime + dt : 0;
+    this.sprinting = moving && !this.blocking && input.isHeld('dodge') && this.canUseStamina();
     if (this.sprinting) this.spend(T.stamina.sprint * dt);
 
-    const speed = this.sprinting ? T.sprintSpeed : T.walkSpeed;
+    let speed = this.sprinting ? T.sprintSpeed : T.walkSpeed;
+    if (this.blocking) speed *= C.block.moveFactor;
     const target = wish.clone().multiplyScalar(speed);
     this.accelerate(target, T.groundAccel, dt);
-    if (moving) this.turnTowards(wish, 12, dt);
+    // Locked on (and not sprinting) or blocking: keep facing the target / camera and strafe.
+    if (this.aim && !this.sprinting) this.turnTowards(this.aim.clone().sub(this.pos), 12, dt);
+    else if (this.blocking) this.turnTowards(this.cameraForward(), 12, dt);
+    else if (moving) this.turnTowards(wish, 12, dt);
 
     const wall = this.moveHorizontal(dt, true);
     if (wall && moving && wish.dot(wall.normal) < -0.5) {
@@ -293,6 +371,7 @@ export class Player {
     }
     this.pos.y = g;
     this.applyFallDamage(this.lowestVy);
+    if (this.state === 'dead') return;
     this.lowestVy = 0;
     this.vel.y = 0;
     this.setState('ground');
@@ -304,10 +383,170 @@ export class Player {
     const dmg = Math.round(over * T.fall.damagePerSpeed);
     this.hp -= dmg;
     this.events.push(`-${dmg} fall damage`);
-    if (this.hp <= 0) {
-      this.events.push('You fell. Respawning…');
-      this.respawn();
+    if (this.hp <= 0) this.die('You fell.');
+  }
+
+  // ---------------------------------------------------------------- combat
+
+  private cameraForward(): THREE.Vector3 {
+    return new THREE.Vector3(-Math.sin(this.camYaw), 0, -Math.cos(this.camYaw));
+  }
+
+  private startAttack(index: number): void {
+    const a = C.combo[index];
+    if (!this.spend(a.stamina)) return;
+    this.attackBuffer = 0;
+    this.comboIndex = index;
+    this.chainQueued = false;
+    this.strikeDone = false;
+    this.sprinting = false;
+    this.blocking = false;
+    // Face the lock-on target, or where the camera looks.
+    const dir = this.aim ? this.aim.clone().sub(this.pos).setY(0) : this.cameraForward();
+    if (dir.lengthSq() > 1e-4) this.facing = Math.atan2(-dir.x, -dir.z);
+    this.setState('attack');
+  }
+
+  /** Current phase of the attack: 'windup' | 'swing' | 'recover'. */
+  attackPhase(): 'windup' | 'swing' | 'recover' {
+    const a = C.combo[this.comboIndex];
+    if (this.stateTime < a.windup) return 'windup';
+    if (this.stateTime < a.windup + a.swing) return 'swing';
+    return 'recover';
+  }
+
+  private updateAttack(dt: number, input: Input, wish: THREE.Vector3): void {
+    const a = C.combo[this.comboIndex];
+    const t = this.stateTime;
+    const phase = this.attackPhase();
+
+    // Roll out of the wind-up or recovery (never the swing), for extra stamina.
+    if (phase !== 'swing' && input.consumePress('dodge')) {
+      const cost = T.stamina.roll + C.rollCancelExtra;
+      if (this.canUseStamina(1) && this.spend(cost)) {
+        this.startRoll(wish.lengthSq() > 0.01 ? wish : this.facingVector());
+        return;
+      }
     }
+
+    if (phase === 'windup' && this.aim) this.turnTowards(this.aim.clone().sub(this.pos), 20, dt);
+
+    // Pressing attack during the swing (or just before it, via the buffer) chains the combo.
+    if (phase !== 'recover' && this.attackBuffer > 0 && t >= a.windup) {
+      this.chainQueued = true;
+      this.attackBuffer = 0;
+    }
+
+    // Lunge forward during the swing, slowing to a stop.
+    const f = this.facingVector();
+    const lunge = phase === 'swing' ? a.lunge * (1 - (t - a.windup) / a.swing) : 0;
+    const k = 1 - Math.exp(-20 * dt);
+    this.vel.x += (f.x * lunge - this.vel.x) * k;
+    this.vel.z += (f.z * lunge - this.vel.z) * k;
+    this.moveHorizontal(dt, true);
+    if (this.stickToGround()) return;
+
+    if (!this.strikeDone && t >= a.windup + a.swing * a.hitAt) {
+      this.strikeDone = true;
+      this.strike = { index: this.comboIndex, damage: a.damage, poise: a.poise, knockback: a.knockback };
+    }
+
+    if (t >= a.windup + a.swing && this.chainQueued) {
+      if (this.comboIndex < C.combo.length - 1 && this.canUseStamina(1)) {
+        this.startAttack(this.comboIndex + 1);
+        if (this.state === 'attack') return;
+      }
+      this.chainQueued = false;
+    }
+    if (t >= a.windup + a.swing + a.recover) this.setState('ground');
+  }
+
+  /** Follow the ground; returns true if the player started falling. */
+  private stickToGround(): boolean {
+    const g = this.world.groundAt(this.pos.x, this.pos.z, this.pos.y);
+    if (g < this.pos.y - 0.6) {
+      this.vel.y = 0;
+      this.setState('air');
+      return true;
+    }
+    this.pos.y = g;
+    this.vel.y = 0;
+    return false;
+  }
+
+  private updateStagger(dt: number): void {
+    const k = Math.exp(-6 * dt);
+    this.vel.x *= k;
+    this.vel.z *= k;
+    this.moveHorizontal(dt, true);
+    if (this.stickToGround()) return;
+    if (this.stateTime >= this.staggerTime) {
+      this.staggerKind = null;
+      this.setState('ground');
+    }
+  }
+
+  /** Apply an enemy hit: rolls dodge it, blocks reduce it, an early block parries it. */
+  takeHit(hit: Hit): HitResult {
+    if (this.state === 'dead') return 'ignored';
+    const fxPos = this.pos.clone().setY(this.pos.y + 1.6);
+    if (this.invulnerable) {
+      this.fx.push({ pos: fxPos, amount: 0, target: 'player', result: 'dodged', stagger: null });
+      return 'dodged';
+    }
+    const away = this.pos.clone().sub(hit.from).setY(0);
+    if (away.lengthSq() < 1e-6) away.copy(this.facingVector()).negate();
+    away.normalize();
+
+    let damage = hit.damage;
+    let poise = hit.poise;
+    let result: HitResult = 'hit';
+    const facesAttacker = this.facingVector().dot(away) <= -Math.cos(((C.block.arc / 2) * Math.PI) / 180);
+    if (this.blocking && facesAttacker) {
+      if (this.blockTime <= C.block.parryWindow) {
+        this.fx.push({ pos: fxPos, amount: 0, target: 'player', result: 'parried', stagger: null });
+        return 'parried';
+      }
+      damage *= 1 - C.block.strength;
+      poise *= 1 - C.block.strength;
+      result = 'blocked';
+    }
+    if (this.state === 'stagger') damage *= C.staggeredDamageBonus;
+    damage = Math.round(damage);
+    this.hp -= damage;
+    const stagger = this.poise.apply(poise);
+    this.fx.push({ pos: fxPos, amount: damage, target: 'player', result, stagger: stagger?.kind ?? null });
+
+    if (this.hp <= 0) {
+      this.die('You died.');
+      return result;
+    }
+    const push = result === 'blocked' ? hit.knockback * 0.4 : hit.knockback;
+    if (stagger) {
+      // A stagger knocks you out of climbing and closes the glider.
+      this.staggerKind = stagger.kind;
+      this.staggerTime = stagger.time;
+      this.vel.set(away.x * push, 0, away.z * push);
+      if (this.state === 'ground' || this.state === 'attack' || this.state === 'stagger' || this.state === 'roll') {
+        this.setState('stagger');
+      } else {
+        this.setState('air');
+      }
+    } else if (this.state === 'ground') {
+      this.vel.x += away.x * push;
+      this.vel.z += away.z * push;
+    }
+    return result;
+  }
+
+  private die(message: string): void {
+    this.hp = 0;
+    this.deaths++;
+    this.vel.set(0, 0, 0);
+    this.lowestVy = 0;
+    this.sprinting = false;
+    this.events.push(`${message} Respawning at the campfire…`);
+    this.setState('dead');
   }
 
   // ---------------------------------------------------------------- glide

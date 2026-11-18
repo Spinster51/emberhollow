@@ -1,4 +1,4 @@
-// Movement smoke test: drives the game in headless Chromium through window.game.step().
+// Movement + combat smoke test: drives the game in headless Chromium through window.game.step().
 // Usage: npm run build && node scripts/smoke.mjs [--shots dir]
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
@@ -57,6 +57,8 @@ await run(() => {
     }
     return -1;
   };
+  // Movement checks run with every enemy frozen in its camp.
+  for (const e of window.game.enemies.list) e.frozen = true;
   window.snap = () => {
     const p = window.game.player;
     return { x: p.pos.x, y: p.pos.y, z: p.pos.z, state: p.state, stamina: p.stamina, hp: p.hp, vy: p.vel.y };
@@ -167,6 +169,266 @@ await run(() => {
 });
 s = await run(() => (window.game.step(60, { moveY: 1 }), window.snap()));
 check('empty stamina = let go', s.state !== 'climb', `state=${s.state}`);
+
+// ================================================================ combat (milestone 2)
+await run(() => {
+  // Arena: player at the spawn facing north (-z); one enemy of `kind` `dist` m ahead.
+  window.arena = (kind, dist = 1.8, frozen = true, dx = 0) => {
+    const g = window.game;
+    g.step(1); // release any held buttons so the next press is a fresh one
+    g.lockOn.target = null;
+    g.hitStop = 0;
+    window.homes ??= new Map(g.enemies.list.map((e) => [e, e.home.clone()]));
+    for (const e of g.enemies.list) {
+      e.home.copy(window.homes.get(e)); // undo earlier arenas
+      e.reset();
+      e.frozen = true;
+    }
+    window.place(0, 12, 0);
+    const p = g.player;
+    p.facing = 0;
+    const e = g.enemies.list.find((x) => x.kind === kind);
+    e.pos.set(dx, 0, 12 - dist);
+    e.home.copy(e.pos);
+    e.reset();
+    e.facing = Math.PI; // facing the player
+    e.frozen = frozen;
+    return e;
+  };
+  window.press = (action, extra = {}) => window.game.step(1, { held: [action], ...extra });
+  window.esnap = (e) => ({ hp: e.hp, state: e.state, alive: e.alive, x: e.pos.x, z: e.pos.z });
+});
+
+// 9. Attack: a sword strike hurts a slime in front, with hit-stop.
+s = await run(() => {
+  const e = window.arena('slime');
+  window.press('attack');
+  const p = window.game.player;
+  const r = { state: p.state, stamina: p.stamina };
+  window.until({}, () => window.game.hitStop > 0, 30);
+  return { ...r, hitStop: window.game.hitStop, e: window.esnap(e) };
+});
+check('attack starts a strike and costs stamina', s.state === 'attack' && Math.abs(s.stamina - 94) < 0.5, `state=${s.state} stamina=${s.stamina.toFixed(1)}`);
+check('strike hits slime for 12, with hit-stop', s.e.hp === 18 && s.hitStop > 0, `hp=${s.e.hp} hitStop=${s.hitStop}`);
+check('poise break staggers the slime', s.e.state === 'stagger', s.e.state);
+
+// 10. Combo: pressing during each swing chains all 3 strikes, skipping recoveries.
+s = await run(() => {
+  window.arena('bandit', 10); // out of reach: no hit-stop
+  const p = window.game.player;
+  const seen = [];
+  window.press('attack');
+  let frames = 1;
+  for (let i = 0; i < 200 && p.state === 'attack'; i++) {
+    const swing = p.attackPhase() === 'swing';
+    window.game.step(1, swing ? { held: ['attack'] } : {});
+    window.game.step(0); // release so the next swing gives a fresh press
+    frames++;
+    if (!seen.includes(p.comboIndex)) seen.push(p.comboIndex);
+  }
+  return { seen, frames };
+});
+check('combo chains 3 strikes', s.seen.join() === '0,1,2', s.seen.join());
+check('chained combo skips recoveries (~1.47 s)', s.frames > 80 && s.frames < 95, `${s.frames} frames`);
+
+// 11. Without a second press the recovery plays and the combo resets.
+s = await run(() => {
+  window.arena('bandit', 10);
+  const p = window.game.player;
+  window.press('attack');
+  const n = window.until({}, () => p.state !== 'attack', 120);
+  window.press('attack');
+  return { n, idx: p.comboIndex, state: p.state };
+});
+check('single strike: recovery then back to idle', s.n > 30 && s.n < 45, `${s.n} frames`);
+check('next press after recovery restarts the combo', s.idx === 0 && s.state === 'attack', `idx=${s.idx}`);
+
+// 12. Input buffer: a press slightly before the swing still chains.
+s = await run(() => {
+  window.arena('bandit', 10);
+  const p = window.game.player;
+  window.press('attack');
+  window.game.step(4); // windup is 9 frames; press at frame ~5
+  window.press('attack');
+  window.until({}, () => p.comboIndex === 1 || p.state !== 'attack', 60);
+  return { idx: p.comboIndex, state: p.state };
+});
+check('early press is buffered into the combo', s.idx === 1 && s.state === 'attack', `idx=${s.idx} state=${s.state}`);
+
+// 13. Dodge rules: not during the swing; allowed in recovery for extra stamina.
+s = await run(() => {
+  window.arena('bandit', 10);
+  const p = window.game.player;
+  window.press('attack');
+  window.until({}, () => p.attackPhase() === 'swing', 30);
+  window.press('dodge', { moveY: -1 });
+  const duringSwing = p.state;
+  window.until({}, () => p.attackPhase() === 'recover', 30);
+  const before = p.stamina;
+  window.game.step(1);
+  window.press('dodge', { moveY: -1 });
+  return { duringSwing, after: p.state, cost: before - p.stamina };
+});
+check('cannot roll during the swing', s.duringSwing === 'attack', s.duringSwing);
+check('roll out of recovery costs extra stamina', s.after === 'roll' && Math.abs(s.cost - 25) < 1, `state=${s.after} cost=${s.cost.toFixed(1)}`);
+
+// 14. Kill an enemy: it dies and the lock-on drops.
+s = await run(() => {
+  const e = window.arena('slime');
+  const g = window.game;
+  g.lockOn.toggle(g.player, g.enemies.list, g.cam.yaw);
+  const locked = g.lockOn.target === e;
+  for (let i = 0; i < 12 && e.alive; i++) {
+    window.press('attack');
+    window.until({}, () => g.player.state !== 'attack', 120);
+    window.game.step(5);
+  }
+  window.game.step(2);
+  return { locked, e: window.esnap(e), target: g.lockOn.target ? g.lockOn.target.id : null };
+});
+check('lock-on picks the enemy in front', s.locked);
+check('slime can be killed', !s.e.alive && s.e.hp === 0, `hp=${s.e.hp} state=${s.e.state}`);
+check('lock-on releases a dead target', s.target === null, String(s.target));
+
+// 15. Defence: roll i-frames, block, parry, stagger.
+s = await run(() => {
+  const g = window.game;
+  const p = g.player;
+  const from = (z) => ({ damage: 12, poise: 8, knockback: 3, from: p.pos.clone().setZ(p.pos.z + z) });
+  const out = {};
+  window.arena('bandit', 10);
+  window.press('dodge', { moveY: 1 });
+  window.game.step(3);
+  out.roll = p.takeHit(from(-1.5));
+  out.rollHp = p.hp;
+  window.arena('bandit', 10);
+  window.game.step(30, { held: ['block'] });
+  out.block = p.takeHit(from(-1.5));
+  out.blockHp = p.hp;
+  window.arena('bandit', 10);
+  window.game.step(30, { held: ['block'] });
+  out.blockBehind = p.takeHit(from(1.5));
+  out.blockBehindHp = p.hp;
+  window.arena('bandit', 10);
+  window.game.step(1, { held: ['block'] });
+  window.game.step(5, { held: ['block'] });
+  out.parry = p.takeHit(from(-1.5));
+  out.parryHp = p.hp;
+  window.arena('bandit', 10);
+  p.takeHit({ damage: 5, poise: 30, knockback: 6, from: p.pos.clone().setZ(p.pos.z - 1) });
+  out.stagger = p.state + '/' + p.staggerKind;
+  window.game.step(100);
+  out.recovered = p.state;
+  return out;
+});
+check('roll i-frames dodge a hit', s.roll === 'dodged' && s.rollHp === 100, `${s.roll} hp=${s.rollHp}`);
+check('block from the front cuts damage 12 -> 7', s.block === 'blocked' && s.blockHp === 93, `${s.block} hp=${s.blockHp}`);
+check('block does not cover the back', s.blockBehind === 'hit' && s.blockBehindHp === 88, `${s.blockBehind} hp=${s.blockBehindHp}`);
+check('early block parries (no damage)', s.parry === 'parried' && s.parryHp === 100, `${s.parry} hp=${s.parryHp}`);
+check('poise break knocks the player down, then recovers', s.stagger === 'stagger/knockdown' && s.recovered === 'ground', `${s.stagger} -> ${s.recovered}`);
+
+// 16. Enemy AI: each kind closes in and hurts the player.
+for (const [kind, dist, secs] of [['slime', 7, 6], ['boar', 9, 6], ['bandit', 8, 6]]) {
+  s = await run(([kind, dist, secs]) => {
+    const e = window.arena(kind, dist, false);
+    const p = window.game.player;
+    const n = window.until({}, () => p.hp < 100, 60 * secs);
+    return { n, hp: p.hp, e: window.esnap(e) };
+  }, [kind, dist, secs]);
+  check(`${kind} chases and hits the player`, s.n > 0, `after ${(s.n / 60).toFixed(1)} s, hp=${s.hp}`);
+}
+
+// 17. Lock-on camera and strafing.
+s = await run(() => {
+  const g = window.game;
+  const p = g.player;
+  const e = window.arena('bandit', 6, true, 0);
+  e.pos.set(6, g.world.groundAt(6, 12, 1e9), 12); // to the east
+  g.cam.yaw = 0;
+  g.lockOn.target = e;
+  window.game.step(60);
+  const fwd = { x: -Math.sin(g.cam.yaw), z: -Math.cos(g.cam.yaw) };
+  const camDot = fwd.x; // east = +x
+  window.game.step(40, { moveX: 1 });
+  const to = { x: e.pos.x - p.pos.x, z: e.pos.z - p.pos.z };
+  const len = Math.hypot(to.x, to.z);
+  const f = p.facingVector();
+  return { camDot, faceDot: (f.x * to.x + f.z * to.z) / len, moved: Math.hypot(p.pos.x, p.pos.z - 12) };
+});
+check('locked camera turns to face the target', s.camDot > 0.95, s.camDot.toFixed(2));
+check('locked player strafes while facing the target', s.faceDot > 0.9 && s.moved > 1, `dot=${s.faceDot.toFixed(2)} moved=${s.moved.toFixed(1)} m`);
+
+s = await run(() => {
+  const g = window.game;
+  const a = window.arena('slime', 5, true, -2);
+  const b = g.enemies.list.filter((x) => x.kind === 'slime')[1];
+  b.pos.set(3, g.world.groundAt(3, 7, 1e9), 7);
+  g.lockOn.target = a;
+  g.lockOn.flick(200, g.player, g.enemies.list);
+  const t = g.lockOn.target;
+  return { ok: t === b, t: t && `${t.kind}#${t.id} (${t.pos.x.toFixed(1)}, ${t.pos.z.toFixed(1)}) alive=${t.alive}`, a: `${a.id} (${a.pos.x.toFixed(1)}, ${a.pos.z.toFixed(1)})`, b: `${b.id} (${b.pos.x.toFixed(1)}, ${b.pos.z.toFixed(1)})` };
+});
+check('flicking right switches to the target on the right', s.ok, `target=${s.t} a=${s.a} b=${s.b}`);
+
+// 18. Player death and respawn.
+s = await run(() => {
+  const g = window.game;
+  const p = g.player;
+  window.arena('bandit', 10);
+  p.pos.x += 3;
+  p.hp = 5;
+  p.takeHit({ damage: 10, poise: 0, knockback: 0, from: p.pos.clone() });
+  const dead = p.state;
+  window.game.step(170);
+  return { dead, state: p.state, hp: p.hp, dx: p.pos.x - g.world.spawn.x, dz: p.pos.z - g.world.spawn.z, deaths: p.deaths };
+});
+check('player dies at 0 HP', s.dead === 'dead', s.dead);
+check('player respawns at the campfire with full HP', s.state === 'ground' && s.hp === 100 && Math.hypot(s.dx, s.dz) < 0.5, `state=${s.state} hp=${s.hp}`);
+
+// 19. Dead enemies respawn after a while once the player is far away.
+s = await run(() => {
+  const g = window.game;
+  const e = window.arena('slime');
+  e.takeHit({ damage: 999, poise: 0, knockback: 0, from: g.player.pos.clone() }, []);
+  const dead = !e.alive;
+  window.place(60, 60, 0);
+  for (const x of g.enemies.list) x.frozen = true;
+  window.game.step(60 * 61);
+  return { dead, alive: e.alive, hp: e.hp };
+});
+check('enemy respawns at its camp after 60 s', s.dead && s.alive && s.hp === 30, `alive=${s.alive} hp=${s.hp}`);
+
+if (shotsDir) {
+  await run(() => {
+    const g = window.game;
+    for (const e of g.enemies.list) {
+      e.home.copy(window.homes.get(e));
+      e.reset();
+      e.frozen = true;
+    }
+    // Bandit camp: lock on to a bandit and land a hit.
+    window.place(-18, 6, 0.5);
+    const p = g.player;
+    const b = g.enemies.list.find((e) => e.kind === 'bandit');
+    b.pos.set(-18, g.world.groundAt(-18, 3.8, 1e9), 3.8);
+    b.facing = Math.PI;
+    g.lockOn.target = b;
+    g.step(30);
+    g.cam.pitch = 0.25;
+    window.press('attack');
+    g.step(16);
+  });
+  await shot('06-combat');
+  await run(() => {
+    const g = window.game;
+    for (const e of g.enemies.list) e.frozen = false;
+    g.lockOn.target = null;
+    window.place(16, 34, 0.0);
+    g.cam.pitch = 0.3;
+    g.step(50);
+  });
+  await shot('07-boars');
+}
 
 check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 

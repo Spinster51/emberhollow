@@ -48,4 +48,59 @@ export const TUNING = {
   fall: { safeSpeed: 16, damagePerSpeed: 4 },
 
   maxHp: 100,
+
+  /** Milestone 2 combat. Times in seconds; see docs/DESIGN.md §11. */
+  combat: {
+    /** Presses are remembered this long so an early tap still fires. */
+    buffer: 0.2,
+    /** Warrior sword combo. `hitAt` = fraction of the swing when the hit lands. */
+    combo: [
+      { windup: 0.15, swing: 0.15, recover: 0.3, hitAt: 0.5, damage: 12, poise: 10, stamina: 6, lunge: 3, knockback: 2 },
+      { windup: 0.12, swing: 0.15, recover: 0.3, hitAt: 0.5, damage: 14, poise: 12, stamina: 6, lunge: 3, knockback: 2 },
+      { windup: 0.25, swing: 0.2, recover: 0.45, hitAt: 0.5, damage: 22, poise: 25, stamina: 10, lunge: 5, knockback: 6 },
+    ],
+    reach: 2.4,
+    /** Total arc of a sword swing, degrees. */
+    arc: 120,
+    /** Extra roll stamina when rolling out of an attack's wind-up or recovery. */
+    rollCancelExtra: 10,
+    block: { moveFactor: 0.4, arc: 90, strength: 0.4, parryWindow: 0.2 },
+    poise: { max: 30, regen: 10, regenDelay: 2 },
+    /** Poise fraction left after a hit → stagger kind (most severe crossed wins). */
+    staggers: [
+      { below: 0, kind: 'knockdown', time: 1.5 },
+      { below: 0.25, kind: 'dazed', time: 0.75 },
+      { below: 0.5, kind: 'stunned', time: 0.35 },
+      { below: 0.75, kind: 'interrupted', time: 0.2 },
+    ],
+    staggerGrace: 1,
+    staggeredDamageBonus: 1.25,
+    deathTime: 2.5,
+    hitStop: { light: 3, heavy: 6 },
+    lockOn: { range: 25, flick: 40 },
+  },
+
+  enemies: {
+    respawnTime: 60,
+    /** Camps respawn only when the player is at least this far away. */
+    respawnDistance: 35,
+    slime: {
+      hp: 30, poise: 15, radius: 0.45, speed: 2.4, aggro: 10, leash: 25, range: 1.6,
+      windup: 0.45, active: 0.25, recover: 0.6, damage: 8, poiseDamage: 8, knockback: 3, cooldown: 1.2,
+      lunge: 5,
+    },
+    boar: {
+      hp: 60, poise: 40, radius: 0.6, speed: 3.5, aggro: 14, leash: 30, range: 9,
+      windup: 0.7, active: 1.1, recover: 1.0, damage: 18, poiseDamage: 30, knockback: 9, cooldown: 2.5,
+      lunge: 12,
+    },
+    bandit: {
+      hp: 70, poise: 35, radius: 0.4, speed: 4.2, aggro: 14, leash: 30, range: 2.0,
+      windup: 0.4, active: 0.15, recover: 0.5, damage: 12, poiseDamage: 14, knockback: 3, cooldown: 1.0,
+      lunge: 3,
+    },
+  },
 };
+
+export type EnemyKind = 'slime' | 'boar' | 'bandit';
+export type StaggerKind = 'interrupted' | 'stunned' | 'dazed' | 'knockdown';

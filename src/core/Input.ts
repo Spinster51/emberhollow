@@ -1,16 +1,21 @@
 // Keyboard, mouse (pointer lock) and gamepad input, merged into one set of actions.
 // Tests can drive the game through `setVirtual`, which bypasses real devices.
 
-export type Action = 'jump' | 'dodge' | 'interact';
+export type Action = 'jump' | 'dodge' | 'interact' | 'attack' | 'block' | 'lockOn';
 
 const KEY_ACTIONS: Record<string, Action> = {
   Space: 'jump',
   ShiftLeft: 'dodge',
   ShiftRight: 'dodge',
   KeyE: 'interact',
+  Tab: 'lockOn',
+  Mouse0: 'attack',
+  Mouse1: 'lockOn',
+  Mouse2: 'block',
 };
 
-const PAD_ACTIONS: Record<number, Action> = { 0: 'jump', 1: 'dodge', 2: 'interact' };
+// Standard gamepad: A jump, B dodge, X attack, Y interact, LT lock-on, RT/RB block.
+const PAD_ACTIONS: Record<number, Action> = { 0: 'jump', 1: 'dodge', 2: 'attack', 3: 'interact', 5: 'block', 6: 'lockOn', 7: 'block' };
 
 export interface VirtualInput {
   moveX?: number;
@@ -36,14 +41,22 @@ export class Input {
 
   constructor(canvas: HTMLCanvasElement) {
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+      if (e.code === 'Space' || e.code === 'Tab' || e.code.startsWith('Arrow')) e.preventDefault();
       this.keys.add(e.code);
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.keys.clear());
-    canvas.addEventListener('click', () => {
-      if (!this.pointerLocked) canvas.requestPointerLock?.();
+    // The first click only captures the mouse; once captured, buttons are game actions.
+    canvas.addEventListener('mousedown', (e) => {
+      if (!this.pointerLocked) {
+        canvas.requestPointerLock?.();
+        return;
+      }
+      e.preventDefault();
+      this.keys.add(`Mouse${e.button}`);
     });
+    window.addEventListener('mouseup', (e) => this.keys.delete(`Mouse${e.button}`));
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     document.addEventListener('pointerlockchange', () => {
       this.pointerLocked = document.pointerLockElement === canvas;
     });

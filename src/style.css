@@ -107,3 +107,53 @@ body {
   text-shadow: 2px 2px 0 #000;
   transition: opacity 0.5s;
 }
+
+/* ---- combat ---- */
+
+.dmg {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-weight: bold;
+  font-size: 18px;
+  color: #fff4d6;
+  text-shadow: 2px 2px 0 #000, -1px -1px 0 #000;
+  white-space: nowrap;
+}
+
+.dmg.player {
+  color: #ff6b5a;
+}
+
+.dmg.big {
+  font-size: 26px;
+  color: #ffc04a;
+}
+
+.dmg.note {
+  font-size: 15px;
+  color: #9fd8ff;
+}
+
+.ebar {
+  position: absolute;
+  width: 54px;
+  height: 6px;
+  transform: translate(-50%, -50%);
+  background: #2a1b14;
+  border: 1px solid #000;
+  transition: opacity 0.3s;
+}
+
+.ebar > div {
+  height: 100%;
+  background: #e2564b;
+}
+
+.reticle {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%) rotate(45deg);
+  border: 3px solid #ffd27a;
+  box-shadow: 0 0 0 2px #000;
+}
