@@ -32,4 +32,5 @@ Browser 3D action RPG (Three.js + TypeScript + Vite). Owner play-tests; Claude w
 - Next: milestone 2 — Warrior combat, lock-on, 3 meadow enemies (slime, boar, bandit), damage and death. See DESIGN.md §11 for combat timings.
 
 ## Decisions log
+- Skills: only project-relevant ones kept, stored in `.claude/skills/` (see its README for the list and sources). Other-engine and unrelated skills removed.
 - Graphiti memory MCP: skipped (cloud container can't reach a hosted graph DB). This file is the project memory instead — keep Status and Decisions up to date.
