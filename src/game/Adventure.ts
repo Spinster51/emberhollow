@@ -6,7 +6,8 @@ import { Town } from '../world/Town';
 import { QuestLog, type QuestDef, type QuestOwner } from '../world/quests';
 import { Dialog } from '../ui/Dialog';
 import { SlotSelect } from '../ui/SlotSelect';
-import { SaveStore, emptyAccount, exportFile, importFile, SAVE_VERSION, type AccountSave, type CharSave } from '../save/Save';
+import { StartPage } from '../ui/StartPage';
+import { SaveStore, continueSlot, emptyAccount, exportFile, importFile, SAVE_VERSION, type AccountSave, type CharSave } from '../save/Save';
 import { bumpUid, rollItem, type Item, type Rarity } from '../items/items';
 import { sound } from '../core/sound';
 import type { Interactable } from '../loot/Loot';
@@ -34,6 +35,8 @@ export class Adventure {
   readonly quests = new QuestLog();
   readonly dialog: Dialog;
   readonly slotSelect: SlotSelect;
+  /** The first screen (title). */
+  readonly startPage: StartPage;
   readonly store = new SaveStore();
   account: AccountSave = emptyAccount();
   /** Current character slot, or -1 (tests / not saving). */
@@ -56,8 +59,17 @@ export class Adventure {
     this.slotSelect = new SlotSelect(hudRoot, {
       play: (i) => this.play(i),
       create: (i) => this.create(i),
+      overwrite: (i) => this.create(i),
       remove: (i) => this.remove(i),
+      back: () => this.showStart(),
       exportSave: () => void this.exportSave(),
+      importSave: () => void this.importSave(),
+    });
+    this.startPage = new StartPage(hudRoot, {
+      newGame: () => this.newGame(),
+      continueGame: () => this.continueGame(),
+      load: () => this.openSlots(),
+      settings: () => game.settingsUI.show(),
       importSave: () => void this.importSave(),
     });
     this.town = new Town(world, {
@@ -394,13 +406,46 @@ export class Adventure {
 
   // ---------------------------------------------------------------- saving
 
-  /** Load the account and show the character slots (real game). */
+  /** Load the account and show the start page (real game). */
   async boot(): Promise<void> {
     this.account = await this.store.load();
     if (this.account.home) this.game.home.load(this.account.home);
     this.bumpUids();
-    this.slotSelect.show(this.account);
+    this.showStart();
+  }
+
+  /** Title: the start page (the first screen). */
+  showStart(note = ''): void {
+    this.slotSelect.hide();
+    this.startPage.show(this.account, note);
     this.game.updateMenus();
+  }
+
+  /** Title: the 4-slot list (Load, a full New game, or after a delete or import). */
+  openSlots(note = '', full = false): void {
+    this.startPage.hide();
+    this.slotSelect.show(this.account, note, full);
+    this.game.updateMenus();
+  }
+
+  /** New game: the first empty slot; if all four are used, the list so one can be overwritten. */
+  newGame(): void {
+    const i = this.account.slots.findIndex((s) => !s);
+    if (i >= 0) this.create(i);
+    else this.openSlots('All four slots are full. Choose one to overwrite, or go back.', true);
+  }
+
+  /** Continue: the last-played slot (see continueSlot). */
+  continueGame(): void {
+    const i = continueSlot(this.account);
+    if (i >= 0) this.play(i);
+  }
+
+  /** Leave the title screens: the HUD and the world take over. */
+  private enterWorld(): void {
+    this.startPage.hide();
+    this.slotSelect.hide();
+    this.game.setPlaying(true);
   }
 
   private bumpUids(): void {
@@ -419,13 +464,15 @@ export class Adventure {
     const s = this.account.slots[i];
     if (!s) return;
     this.slot = i;
+    this.account.lastSlot = i;
+    void this.store.save(this.account);
     this.apply(s);
-    this.slotSelect.hide();
-    this.game.updateMenus();
+    this.enterWorld();
   }
 
   create(i: number): void {
     this.pendingSlot = i;
+    this.startPage.hide();
     this.slotSelect.hide();
     this.game.showClassSelect();
   }
@@ -438,6 +485,7 @@ export class Adventure {
       this.pendingSlot = -1;
       void this.saveNow();
     }
+    this.enterWorld();
   }
 
   /** Reset per-character world state for a new character. */
@@ -465,9 +513,10 @@ export class Adventure {
 
   async remove(i: number): Promise<void> {
     this.account.slots[i] = null;
+    if (this.account.lastSlot === i) this.account.lastSlot = null;
     if (this.slot === i) this.slot = -1;
     await this.store.save(this.account);
-    this.slotSelect.show(this.account);
+    this.openSlots();
   }
 
   /** Save now if playing a slot (autosave points). */
@@ -479,7 +528,10 @@ export class Adventure {
 
   saveNow(): Promise<boolean> {
     this.sinceSave = 0;
-    if (this.slot >= 0) this.account.slots[this.slot] = this.serialize();
+    if (this.slot >= 0) {
+      this.account.slots[this.slot] = this.serialize();
+      this.account.lastSlot = this.slot;
+    }
     this.account.home = this.game.home.save();
     this.account.version = SAVE_VERSION;
     this.lastSave = this.store.save(this.account);
@@ -568,9 +620,11 @@ export class Adventure {
       if (data.home) this.game.home.load(data.home);
       this.bumpUids();
       this.slot = -1;
-      this.slotSelect.show(this.account, 'Save file imported.');
+      this.openSlots('Save file imported.');
     } catch (e) {
-      this.slotSelect.show(this.account, `Could not import: ${(e as Error).message}`);
+      const note = `Could not import: ${(e as Error).message}`;
+      if (this.slotSelect.visible) this.openSlots(note);
+      else this.showStart(note);
     }
   }
 }

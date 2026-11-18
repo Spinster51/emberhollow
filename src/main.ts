@@ -9,8 +9,10 @@ const layout = params.has('test') && params.get('world') !== 'main' ? TEST_LAYOU
 const game = new Game(canvas, hud, layout);
 
 // `?test` puts the simulation under manual control for automated checks.
-if (new URLSearchParams(location.search).has('test')) game.manual = true;
-else void game.adventure.boot();
+if (new URLSearchParams(location.search).has('test')) {
+  game.manual = true;
+  game.setPlaying(true);
+} else void game.adventure.boot();
 (window as unknown as { game: Game }).game = game;
 // Test helpers: item factories and tooltip rendering.
 if (new URLSearchParams(location.search).has('test')) {

@@ -25,6 +25,11 @@ body {
   pointer-events: none;
 }
 
+/* Title screens (start page, slot list, class pick): only their panels show, never the HUD or minimap. */
+#hud.title > :not(.classpick):not(.settings-panel) {
+  display: none !important;
+}
+
 .panel {
   position: absolute;
   background: rgba(15, 12, 10, 0.72);
@@ -538,7 +543,8 @@ body {
 .classpick {
   position: absolute;
   inset: 0;
-  background: rgba(10, 8, 6, 0.82);
+  z-index: 20;
+  background: rgba(10, 8, 6, 0.9);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -756,7 +762,8 @@ body {
 }
 
 .dialog-options button,
-.slots button {
+.slots button,
+.start button {
   pointer-events: auto;
   text-align: left;
   background: #2c2016;
@@ -769,7 +776,8 @@ body {
 }
 
 .dialog-options button:hover:not(:disabled),
-.slots button:hover {
+.slots button:hover,
+.start button:hover:not(:disabled) {
   background: #3d2c1e;
   border-color: #ffd27a;
 }
@@ -791,8 +799,63 @@ body {
   color: #ffb0a8;
 }
 
-.slots .note {
+.slots .note,
+.start .note {
   color: #ffd27a;
+  text-align: center;
+  max-width: 420px;
+}
+
+/* Start page: a column of big buttons under the title. */
+.start .tagline {
+  color: #c8b89a;
+  font-size: 14px;
+  text-align: center;
+}
+
+.start-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(300px, 100%);
+  box-sizing: border-box;
+}
+
+.start-menu button {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  font-size: 16px;
+  text-align: left;
+}
+
+.start-menu button.primary {
+  border-color: #ffd27a;
+}
+
+.start-menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.start-menu button b {
+  display: block;
+  font-weight: normal;
+}
+
+.start-menu button small {
+  display: block;
+  color: #b9a888;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+/* Back to the start page from the slot list (top-left, inside the 16px gutter). */
+.slots > button.back {
+  position: absolute;
+  top: 16px;
+  left: 16px;
 }
 
 .savebar {
@@ -914,7 +977,7 @@ body {
 .craft-btn:disabled { opacity: 0.45; cursor: default; }
 
 /* Settings panel (O) */
-.settings-panel { width: 340px; }
+.settings-panel { width: 340px; z-index: 30; }
 .set-body { padding: 4px 4px 10px; }
 .set-row { display: flex; gap: 8px; align-items: center; margin: 6px 0 4px; }
 .set-row .craft-btn { flex: 1; text-align: center; }

@@ -52,6 +52,9 @@ export class Game {
   readonly interactSources: (() => Interactable[])[] = [];
   /** While a menu is open the world keeps running but ignores game input. */
   menuOpen = false;
+  /** False on the title screens (start page, slots, class pick): the HUD is hidden and input ignored. */
+  private playing = false;
+  private hudRoot: HTMLElement;
   readonly ui: InventoryUI;
   readonly settingsUI: SettingsUI;
   readonly charUI: CharacterUI;
@@ -76,6 +79,8 @@ export class Game {
   manual = false;
 
   constructor(canvas: HTMLCanvasElement, hudRoot: HTMLElement, layout: Layout = TEST_LAYOUT) {
+    this.hudRoot = hudRoot;
+    hudRoot.classList.add('title');
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
     this.renderer.setPixelRatio(1);
     this.renderer.shadowMap.enabled = true;
@@ -363,11 +368,21 @@ export class Game {
     this.updateMenus();
   }
 
+  /**
+   * Title screens own the screen until a character is in play. Only the title panels (`.classpick`,
+   * `.settings-panel`) stay visible under the `title` class; the HUD and minimap are hidden.
+   */
+  setPlaying(on: boolean): void {
+    this.playing = on;
+    this.hudRoot.classList.toggle('title', !on);
+    this.updateMenus();
+  }
+
   updateMenus(): void {
     const a = this.adventure;
     this.menuOpen =
-      this.ui.isOpen || this.charUI.isOpen || this.settingsUI.isOpen || this.classSelect.visible ||
-      !!a && (a.dialog.isOpen || a.slotSelect.visible) || this.hud.mapOpen;
+      !this.playing || this.ui.isOpen || this.charUI.isOpen || this.settingsUI.isOpen || this.classSelect.visible ||
+      !!a && (a.dialog.isOpen || a.slotSelect.visible || a.startPage.visible) || this.hud.mapOpen;
     if (this.menuOpen) document.exitPointerLock?.();
   }
 

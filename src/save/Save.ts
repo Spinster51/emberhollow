@@ -40,10 +40,19 @@ export interface AccountSave {
   version: number;
   home: HomeSave | null;
   slots: (CharSave | null)[];
+  /** Slot last played or saved (the Continue button); missing in older saves. */
+  lastSlot?: number | null;
 }
 
 export function emptyAccount(): AccountSave {
-  return { version: SAVE_VERSION, home: null, slots: new Array(SLOTS).fill(null) };
+  return { version: SAVE_VERSION, home: null, slots: new Array(SLOTS).fill(null), lastSlot: null };
+}
+
+/** The slot Continue loads: the last-played one if it still has a character, else the first used slot, else -1. */
+export function continueSlot(account: AccountSave): number {
+  const last = account.lastSlot;
+  if (typeof last === 'number' && account.slots[last]) return last;
+  return account.slots.findIndex((s) => !!s);
 }
 
 /** Check (and lightly repair) data from a file or an older save. Throws on garbage. */
@@ -56,7 +65,8 @@ export function validateAccount(data: unknown): AccountSave {
   for (const s of slots) {
     if (s && (typeof s.cls !== 'string' || typeof s.level !== 'number' || !s.inv)) throw new Error('A character in this file is damaged.');
   }
-  return { version: SAVE_VERSION, home: d.home ?? null, slots };
+  const lastSlot = typeof d.lastSlot === 'number' && d.lastSlot >= 0 && d.lastSlot < SLOTS ? d.lastSlot : null;
+  return { version: SAVE_VERSION, home: d.home ?? null, slots, lastSlot };
 }
 
 const DB = 'emberhollow';

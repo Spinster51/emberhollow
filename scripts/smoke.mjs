@@ -1956,6 +1956,125 @@ if (shotsDir) {
   await shot2('27-vault-map');
 }
 
+// ================================================================ title: start page and HUD (milestone 8 prelude)
+// The real game (no ?test) boots to the start page. Every boot() below is a fresh page load on the same saves.
+const page3 = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+page3.on('pageerror', (e) => errors.push(String(e)));
+page3.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+const run3 = (fn, arg) => page3.evaluate(fn, arg);
+const boot = async () => {
+  await page3.goto(`http://localhost:${PORT}/`);
+  await page3.waitForFunction(() => window.game?.adventure?.startPage?.visible);
+};
+const hudState = () =>
+  run3(() => {
+    const d = (sel) => getComputedStyle(document.querySelector(sel)).display;
+    return { mini: d('.minimap'), tracker: d('.tracker'), skills: d('.skillbar'), hp: d('.panel.hp'), start: d('.start'), menu: window.game.menuOpen };
+  });
+const playing = () => page3.waitForFunction(() => !window.game.menuOpen);
+
+await boot();
+if (shotsDir) await page3.screenshot({ path: `${shotsDir}/28-start-page.png` });
+let h = await hudState();
+check('title: HUD, minimap and quest tracker hidden; start page shown', h.mini === 'none' && h.tracker === 'none' && h.skills === 'none' && h.hp === 'none' && h.start !== 'none' && h.menu, JSON.stringify(h));
+const labels = await run3(() => [...document.querySelectorAll('.start-menu button')].map((b) => b.querySelector('b').textContent).join(','));
+check('start page buttons: New game, Continue, Load, Settings, Import', labels === 'New game,Continue,Load,Settings,Import save file', labels);
+const noSave = await page3.locator('.start-menu button', { hasText: 'Continue' }).isDisabled();
+check('Continue is disabled with a hint when there is no save', noSave && (await run3(() => document.querySelector('.start-menu button:nth-child(2)').textContent.includes('No saved game yet'))));
+await page3.setViewportSize({ width: 390, height: 844 });
+const phone = await run3(() => {
+  const s = document.querySelector('.start');
+  const m = document.querySelector('.start-menu').getBoundingClientRect();
+  return { noScroll: s.scrollWidth <= s.clientWidth, gutter: m.left >= 16 && m.right <= window.innerWidth - 16 };
+});
+check('start page fits a 390 px phone (no horizontal scroll, 16 px gutter)', phone.noScroll && phone.gutter, JSON.stringify(phone));
+await page3.setViewportSize({ width: 1280, height: 720 });
+
+// New game: first empty slot, class pick, then play with the HUD back.
+await page3.locator('.start-menu button', { hasText: 'New game' }).click();
+await page3.locator('.classpick:not(.slots):not(.start) .classcard').nth(3).click();
+await playing();
+await run3(() => window.game.adventure.lastSave);
+const created = await run3(async () => {
+  const a = window.game.adventure;
+  const saved = await a.store.load();
+  return { slot: a.slot, cls: window.game.player.cls, stored: !!saved.slots[0], last: saved.lastSlot };
+});
+h = await hudState();
+check('New game creates a character in slot 1 and hides the start page', created.slot === 0 && created.cls === 'assassin' && created.stored && created.last === 0 && h.start === 'none', JSON.stringify({ created, start: h.start }));
+check('in play: HUD, skill bar and minimap are visible', h.mini !== 'none' && h.skills !== 'none' && h.hp !== 'none' && !h.menu, JSON.stringify(h));
+
+// Continue loads the last-played slot, not the first one: make slot 2 the last played.
+await boot();
+await page3.locator('.start-menu button', { hasText: 'New game' }).click();
+await page3.locator('.classpick:not(.slots):not(.start) .classcard').nth(2).click();
+await playing();
+await run3(() => window.game.adventure.lastSave);
+await boot();
+const contHint = await run3(() => document.querySelector('.start-menu button:nth-child(2) small').textContent);
+check('Continue is enabled and names the last-played slot', !(await page3.locator('.start-menu button', { hasText: 'Continue' }).isDisabled()) && /^Slot 2 · Mage/.test(contHint), contHint);
+await page3.locator('.start-menu button', { hasText: 'Continue' }).click();
+await playing();
+const cont = await run3(() => ({ slot: window.game.adventure.slot, cls: window.game.player.cls, start: document.querySelector('.start').style.display }));
+check('Continue loads the last-played slot and hides the start page', cont.slot === 1 && cont.cls === 'mage' && cont.start === 'none', JSON.stringify(cont));
+
+// Load opens the four slots; Back returns to the start page.
+await boot();
+await page3.locator('.start-menu button', { hasText: 'Load' }).click();
+const slotView = await run3(() => ({ cards: document.querySelectorAll('.slots .classcard').length, shown: window.game.adventure.slotSelect.visible, start: document.querySelector('.start').style.display }));
+check('Load shows the four character slots', slotView.cards === 4 && slotView.shown && slotView.start === 'none', JSON.stringify(slotView));
+await page3.locator('.slots > button.back').click();
+check('Back returns to the start page', await run3(() => window.game.adventure.startPage.visible && !window.game.adventure.slotSelect.visible));
+
+// Settings opens the O panel from the start page, above it, with no character loaded.
+await page3.locator('.start-menu button', { hasText: 'Settings' }).click();
+const settingsOpen = await run3(() => {
+  const panel = document.querySelector('.settings-panel');
+  const r = panel.getBoundingClientRect();
+  const top = document.elementFromPoint(r.left + r.width / 2, r.top + 12);
+  return { open: window.game.settingsUI.isOpen && window.game.menuOpen, shown: getComputedStyle(panel).display !== 'none', onTop: panel.contains(top), start: window.game.adventure.startPage.visible };
+});
+check("Settings opens the settings panel from the start page, on top", settingsOpen.open && settingsOpen.shown && settingsOpen.onTop && settingsOpen.start, JSON.stringify(settingsOpen));
+await page3.keyboard.press('Escape');
+check('Esc closes the settings panel and the start page stays', await run3(() => !window.game.settingsUI.isOpen && window.game.adventure.startPage.visible));
+
+// Import from the start page: the file chooser, then the slot list with the result.
+const json = await run3(() => JSON.stringify(window.game.adventure.account));
+const [chooser] = await Promise.all([page3.waitForEvent('filechooser'), page3.locator('.start-menu button', { hasText: 'Import save file' }).click()]);
+await chooser.setFiles({ name: 'save.json', mimeType: 'application/json', buffer: Buffer.from(json) });
+await page3.waitForFunction(() => window.game.adventure.slotSelect.visible);
+const imported = await run3(() => document.querySelector('.slots .note')?.textContent);
+check('Import from the start page reads a save file and lists the slots', imported === 'Save file imported.', imported);
+
+// Full slots: New game offers overwrite, which asks first and keeps the old character when cancelled.
+await run3(async () => {
+  const a = window.game.adventure;
+  for (let i = 0; i < 4; i++) a.account.slots[i] = a.account.slots[i] ?? a.serialize();
+  await a.store.save(a.account);
+});
+await boot();
+const hint = await run3(() => document.querySelector('.start-menu button small').textContent);
+check('New game says the slots are full when all four are used', /full/.test(hint), hint);
+await page3.locator('.start-menu button', { hasText: 'New game' }).click();
+const full = await run3(() => ({
+  shown: window.game.adventure.slotSelect.visible,
+  overwrite: [...document.querySelectorAll('.slots button')].filter((b) => b.textContent.startsWith('Overwrite')).length,
+}));
+check('a full New game opens the slot list with overwrite options', full.shown && full.overwrite === 4, JSON.stringify(full));
+page3.once('dialog', (d) => d.dismiss());
+await page3.locator('.slots .classcard').nth(1).locator('button', { hasText: 'Overwrite' }).click();
+const declined = await run3(() => ({ pick: window.game.classSelect.visible, kept: window.game.adventure.account.slots[1]?.cls }));
+check('cancelling the overwrite keeps the old character', !declined.pick && declined.kept === 'mage', JSON.stringify(declined));
+page3.once('dialog', (d) => d.accept());
+await page3.locator('.slots .classcard').nth(1).locator('button', { hasText: 'Overwrite' }).click();
+await page3.waitForFunction(() => window.game.classSelect.visible);
+await page3.locator('.classpick:not(.slots):not(.start) .classcard').nth(0).click();
+await playing();
+await run3(() => window.game.adventure.lastSave);
+const over = await run3(() => ({ slot: window.game.adventure.slot, cls: window.game.adventure.account.slots[1]?.cls }));
+check('a confirmed overwrite replaces that slot with the new character', over.slot === 1 && over.cls === 'warrior', JSON.stringify(over));
+await page3.close();
+
 check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 await browser.close();
 server.kill();
