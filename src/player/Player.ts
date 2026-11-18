@@ -130,7 +130,8 @@ export class Player {
   /** Set on the step a strike lands; read and cleared by the game. */
   strike: Strike | null = null;
   blocking = false;
-  private blockTime = 0;
+  /** Seconds the block has been held (0 when not blocking); the model raises the shield with it. */
+  blockTime = 0;
   staggerKind: StaggerKind | null = null;
   private staggerTime = 0;
   deaths = 0;

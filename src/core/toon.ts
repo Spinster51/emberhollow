@@ -37,3 +37,46 @@ export function addOutline(mesh: THREE.Mesh, thickness = 0.06): THREE.Mesh {
   mesh.add(o);
   return o;
 }
+
+const shellMats = new Map<number, THREE.MeshBasicMaterial>();
+
+/** Outline material that pushes each vertex out along its normal (works on skinned meshes). */
+function shellMaterial(thickness: number): THREE.MeshBasicMaterial {
+  let m = shellMats.get(thickness);
+  if (!m) {
+    m = new THREE.MeshBasicMaterial({ color: 0x140d0a, side: THREE.BackSide });
+    const push = thickness.toFixed(4);
+    m.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>\n\ttransformed += normalize(normal) * ${push};`,
+      );
+    };
+    m.customProgramCacheKey = () => `shell-outline-${push}`;
+    shellMats.set(thickness, m);
+  }
+  return m;
+}
+
+/**
+ * Inverted-hull outline for loaded models: a back-face copy grown along the normals
+ * (in the mesh's own units). Skinned meshes get a skinned copy bound to the same bones,
+ * so the outline follows the animation.
+ */
+export function addSkinnedOutline(mesh: THREE.Mesh, thickness: number): THREE.Mesh {
+  const mat = shellMaterial(thickness);
+  let o: THREE.Mesh;
+  if ((mesh as THREE.SkinnedMesh).isSkinnedMesh) {
+    const src = mesh as THREE.SkinnedMesh;
+    const shell = new THREE.SkinnedMesh(src.geometry, mat);
+    shell.bind(src.skeleton, src.bindMatrix);
+    o = shell;
+  } else {
+    o = new THREE.Mesh(mesh.geometry, mat);
+  }
+  o.name = `${mesh.name}_outline`;
+  o.raycast = () => {};
+  o.castShadow = false;
+  mesh.add(o);
+  return o;
+}

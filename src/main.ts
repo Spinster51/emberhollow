@@ -16,10 +16,15 @@ if (new URLSearchParams(location.search).has('test')) {
 (window as unknown as { game: Game }).game = game;
 // Test helpers: item factories and tooltip rendering.
 if (new URLSearchParams(location.search).has('test')) {
-  void Promise.all([import('./items/items'), import('./ui/InventoryUI'), import('./save/Save'), import('./items/crafting'), import('./core/sound')]).then(([items, ui, save, crafting, snd]) => {
+  void Promise.all([
+    import('./items/items'), import('./ui/InventoryUI'), import('./save/Save'), import('./items/crafting'), import('./core/sound'),
+    import('./core/models'), import('./core/rig'), import('./player/PlayerModel'), import('./art/assets'),
+  ]).then(([items, ui, save, crafting, snd, models, rig, playerModel, assets]) => {
     (window as unknown as { items: unknown }).items = { ...items, tooltipHtml: ui.tooltipHtml, validateAccount: save.validateAccount };
     (window as unknown as { crafting: unknown }).crafting = crafting;
     (window as unknown as { sound: unknown }).sound = snd;
+    // Art pass: model loading (`modelsSettled`), rigs and a spare PlayerModel for fallback checks.
+    (window as unknown as { art: unknown }).art = { ...models, Rig: rig.Rig, PlayerModel: playerModel.PlayerModel, ...assets };
   });
 }
 

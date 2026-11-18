@@ -32,7 +32,8 @@ Rules: CC0 only (Quaternius, KayKit, Kenney, or another CC0 source). Use glTF/GL
 - [ ] Amulet (Bone Charm)
 
 ## Characters (3 models, with animations)
-- [ ] Player body: idle, walk, run, roll, attack, block, climb, glide, stagger, death
+- [x] Player body: idle, walk, run, roll, attack, block, climb, glide, stagger, death
+  - KayKit Adventurers 1.0 (CC0): one body per class (Barbarian, Knight, Mage, Rogue hooded) on one shared rig. Clips used: Idle, 2H_Melee_Idle, Walking_A, Running_A, Jump_Start, Jump_Idle, Dodge_Forward (roll), 1H/2H/Dualwield melee attacks, Spellcast_Shoot/_Raise/_Long, Throw, Cheer, Block, Blocking, Hit_A, Hit_B, Death_A. Attacks and rolls are scrubbed to the game's own timings. Climb, mantle and glide are procedural bone poses on top of Jump_Idle, because the pack has no such clips.
 - [ ] Villager body (recoloured for 6 NPCs; the carpenter and elder can add a prop)
 - [ ] Villager accessories (hats, props) if the base pack lacks them
 

@@ -2,6 +2,7 @@
 // Usage: npm run build && node scripts/smoke.mjs [--shots dir]
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -10,7 +11,9 @@ const shotsIdx = process.argv.indexOf('--shots');
 const shotsDir = shotsIdx > 0 ? process.argv[shotsIdx + 1] : null;
 const PORT = 4179;
 
-const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'pipe' });
+// Vite's CLI runs straight under node (no npx/shell), so this works on Windows too and kill() stops it.
+const viteBin = fileURLToPath(new URL('../node_modules/vite/bin/vite.js', import.meta.url));
+const server = spawn(process.execPath, [viteBin, 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'pipe' });
 await new Promise((resolve, reject) => {
   server.stdout.on('data', (d) => d.toString().includes(String(PORT)) && resolve());
   server.on('exit', () => reject(new Error('preview server exited')));
@@ -19,10 +22,16 @@ await new Promise((resolve, reject) => {
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader'] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const errors = [];
+// The fallback check below asks for a model file that does not exist on purpose; Chromium logs
+// that one 404. Only that exact message for that exact file is ignored.
+const MISSING_MODEL = 'models/chars/missing-test.glb';
+const expectedError = (m) => m.text().startsWith('Failed to load resource') && (m.location().url ?? '').endsWith(`/${MISSING_MODEL}`);
 page.on('pageerror', (e) => errors.push(String(e)));
-page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+page.on('console', (m) => m.type() === 'error' && !expectedError(m) && errors.push(m.text()));
+// vite preview answers unknown paths with index.html (200); a real host (GitHub Pages) sends a 404.
+await page.route(`**/${MISSING_MODEL}`, (r) => r.fulfill({ status: 404, body: 'not found' }));
 await page.goto(`http://localhost:${PORT}/?test`);
-await page.waitForFunction(() => window.game);
+await page.waitForFunction(() => window.game && window.art);
 
 let failed = 0;
 const check = (name, ok, info) => {
@@ -63,7 +72,46 @@ await run(() => {
     const p = window.game.player;
     return { x: p.pos.x, y: p.pos.y, z: p.pos.z, state: p.state, stamina: p.stamina, hp: p.hp, vy: p.vel.y };
   };
+  // Models load asynchronously: draw a frame (it asks for the current class's files), wait until
+  // every requested file has loaded or failed, then draw again (the rig is swapped in on a frame).
+  window.settleModels = async () => {
+    window.game.step(0, null, true);
+    await window.art.modelsSettled();
+    window.game.step(0, null, true);
+  };
 });
+
+// 0. Art (milestone 8): the warrior shows its rigged KayKit body (barbarian) once the files load.
+let art = await run(async () => {
+  await window.settleModels();
+  const m = window.game.model;
+  return {
+    rig: m.usingRig, cls: m.rigClass, body: !!m.rig?.node('Barbarian_Body'), blocky: m.blocky.visible,
+    clips: m.rig?.has('Idle') && m.rig?.has('1H_Melee_Attack_Chop') && m.rig?.has('Dodge_Forward'),
+    sword: !!m.sword.parent && m.sword.parent === m.rig?.node('handslot.r'), swordItem: m.sword.children.length, clip: m.rig?.clip,
+    // The pack's own hand props (axes, mug, shield) are hidden; only our gear shows.
+    packProps: ['1H_Axe', '2H_Axe', 'Mug', 'Barbarian_Round_Shield'].filter((n) => m.rig?.node(n)?.visible).join(),
+  };
+});
+check('warrior shows the rigged character, not the placeholder', art.rig === true && art.cls === 'warrior' && art.body && !art.blocky && art.clips, JSON.stringify(art));
+check('the equipped sword sits in the rig\'s right hand slot; the pack\'s own props are hidden', art.sword && art.swordItem === 1 && art.packProps === '', JSON.stringify(art));
+
+// A model file that fails to load keeps the blocky placeholder and throws nothing.
+art = await run(async (miss) => {
+  const A = window.art;
+  const g = window.game;
+  const m = new A.PlayerModel({ warrior: miss, tank: miss, mage: miss, assassin: miss }, A.HUMANOID.clips);
+  let threw = '';
+  try {
+    m.update(g.player, 1 / 60);
+    await A.modelsSettled();
+    for (let i = 0; i < 3; i++) m.update(g.player, 1 / 60);
+  } catch (e) {
+    threw = String(e);
+  }
+  return { rig: m.usingRig, state: A.modelState(miss), blocky: m.blocky.visible, sword: m.sword.children.length, threw };
+}, MISSING_MODEL);
+check('a missing model file keeps the placeholder without throwing', art.rig === false && art.state === 'failed' && art.blocky && art.sword === 1 && !art.threw, JSON.stringify(art));
 
 // 1. Spawn and walk.
 let s = await run(() => (window.game.step(10), window.snap()));
@@ -99,6 +147,22 @@ await run(() => window.place(-22, 34, 0));
 s = await run(() => (window.game.step(90, { moveY: 1 }), window.snap()));
 check('walking into tower starts climbing', s.state === 'climb', `state=${s.state} z=${s.z.toFixed(2)}`);
 await shot('02-climb-tower');
+// The climb pose is hand-made on a frozen clip; redrawing the same moment must not move any bone
+// (the mixer skips unchanged values, so un-reset hand turns used to pile up and spin the head).
+art = await run(() => {
+  const g = window.game;
+  const r = g.model.rig;
+  const bones = ['head', 'upperarm.l', 'lowerarm.r', 'upperleg.l'].map((n) => r.node(n));
+  g.player.climbMove.set(0, 0); // holding still on the wall (moving plays the reach cycle)
+  for (let i = 0; i < 15; i++) g.step(0, null, true); // let the 0.1 s cross-fade into the pose finish
+  const before = bones.map((b) => b.quaternion.clone());
+  for (let i = 0; i < 20; i++) g.step(0, null, true);
+  const drift = Math.max(...bones.map((b, i) => b.quaternion.angleTo(before[i])));
+  // Arms are raised: both hands above the head bone.
+  const y = (n) => r.node(n).getWorldPosition(g.player.pos.clone()).y;
+  return { drift, handsUp: y('hand.l') > y('head') && y('hand.r') > y('head'), clip: r.clip };
+});
+check('climb pose: arms up the wall, steady from frame to frame', art.drift < 1e-4 && art.handsUp, JSON.stringify(art));
 const towerTop = await run(() => window.game.world.boxes[0].maxY);
 s = await run(() => {
   window.game.player.stamina = 100;
@@ -520,6 +584,66 @@ check('iron sword: 14 damage per first strike', s.dmg === 14 && s.hit === 14, `s
 check('armour and shield stats apply', s.armour === 22 && s.block === 0.6 && Math.abs(s.move - 0.97) < 1e-6 && s.taken === 9, `armour=${s.armour} block=${s.block} move=${s.move} taken=${s.taken}`);
 check('helmet and shield show on the character', s.helmet === 1 && s.shield === 1 && !s.hair, `helmet=${s.helmet} shield=${s.shield} hair=${s.hair}`);
 
+// 23b. On the rig, a helm wears the pack's own knight helmet on the head bone (one mesh with its
+// outline, and its own material with the rarity glow, so the knight body's shared one stays
+// untinted); a cap wears the fitted box; the class's own hat hides under either.
+s = await run(() => {
+  const g = window.game;
+  const m = g.model;
+  const A = window.art;
+  const inv = g.player.inv;
+  const wear = (item) => { inv.equipped.helmet = item; inv.changed(); g.step(1, null, true); return m.headGear.children; };
+  const out = { rig: m.usingRig };
+  let kids = wear(window.items.makeItem('helm', 'rare'));
+  const helm = kids[0];
+  const orig = A.cloneNode(A.HUMANOID.clips, A.HUMANOID.helm);
+  out.helm = kids.length === 1 && helm.name === A.HUMANOID.helm && helm.isMesh === true && !!helm.getObjectByName(`${A.HUMANOID.helm}_outline`);
+  out.onHead = m.headGear.parent === m.rig?.node('head');
+  out.ownGlow = helm.material !== orig?.material && !!helm.material.map && helm.material.map === orig?.material.map
+    && helm.material.emissive.getHex() !== 0 && orig?.material.emissive.getHex() === 0;
+  out.hatHidden = m.rig?.node('Barbarian_Hat')?.visible === false;
+  kids = wear(window.items.makeItem('cap'));
+  let boxes = 0;
+  m.headGear.traverse((o) => { if (o.geometry?.type === 'BoxGeometry') boxes++; });
+  out.cap = kids.length === 1 && !m.headGear.getObjectByName(A.HUMANOID.helm) && boxes > 0;
+  kids = wear(null);
+  out.bare = kids.length === 0 && m.rig?.node('Barbarian_Hat')?.visible === true;
+  return out;
+});
+check('on the rig a helm wears the pack\'s knight helmet (own glowing material), a cap the fitted box', Object.values(s).every(Boolean), JSON.stringify(s));
+
+// 23c. The mage's staff sits in the rig's right hand slot and stands up beside the body in Idle,
+// clear of the big head (a spare model with a mage stand-in, so the game's own class stays).
+s = await run(async () => {
+  const A = window.art;
+  const g = window.game;
+  const V = g.player.pos.constructor;
+  const inv = { version: 1, equipped: { weapon: window.items.makeItem('oakStaff'), offhand: null, helmet: null, chest: null } };
+  const p = Object.create(g.player, {
+    cls: { value: 'mage' }, inv: { value: inv }, prog: { value: { version: 0 } },
+    state: { value: 'ground' }, vel: { value: new V() }, blocking: { value: false }, stealthTime: { value: 0 },
+  });
+  const m = new A.PlayerModel();
+  m.update(p, 1 / 60);
+  await A.modelsSettled();
+  for (let i = 0; i < 30; i++) m.update(p, 1 / 60);
+  m.root.updateMatrixWorld(true);
+  const staff = m.sword.children[0];
+  const head = m.rig?.node('head');
+  // Points along the staff (foot +0.4 m, gem -1.44 m along its -Z) against an ellipsoid round the head (head-bone space, rig units): > 1 = outside.
+  let clear = 99;
+  for (let z = 0.4; z >= -1.44; z -= 0.05) {
+    const l = head.worldToLocal(new V(0, 0, z).applyMatrix4(staff.matrixWorld));
+    clear = Math.min(clear, (l.x / 0.56) ** 2 + ((l.y - 0.45) / 0.58) ** 2 + ((l.z - 0.02) / 0.53) ** 2);
+  }
+  const up = new V(0, 0, -1).transformDirection(staff.matrixWorld).y;
+  const out = { rig: m.usingRig, cls: m.rigClass, clip: m.rig?.clip, inHand: m.sword.parent === m.rig?.node('handslot.r'), up: +up.toFixed(2), clear: +clear.toFixed(2) };
+  m.rig?.dispose();
+  return out;
+});
+check('the mage\'s staff is in the rig\'s right hand, upright beside the body and clear of the head in Idle',
+  s.rig && s.cls === 'mage' && s.clip === 'Idle' && s.inHand && s.up > 0.75 && s.clear > 1.5, JSON.stringify(s));
+
 // 24. Legendary effects.
 s = await run(() => {
   const g = window.fresh();
@@ -793,6 +917,88 @@ s = await run(() => {
 check('classes start with their own gear and stats',
   s.warrior === 'rustySword/-/100/50' && s.tank === 'rustyMace/woodShield/130/40' && s.mage === 'oakStaff/-/80/130' && s.assassin === 'rustyDaggers/-/85/60',
   JSON.stringify(s));
+
+// 27b. Art: switching class shows that class's own rigged body once its file has loaded.
+s = await run(async () => {
+  const bodies = { tank: 'Knight_Body', mage: 'Mage_Body', assassin: 'Rogue_Body', warrior: 'Barbarian_Body' };
+  const out = {};
+  for (const [c, mesh] of Object.entries(bodies)) {
+    window.asClass(c);
+    await window.settleModels();
+    const m = window.game.model;
+    out[c] = m.usingRig && m.rigClass === c && !!m.rig.node(mesh) && !m.blocky.visible;
+  }
+  return out;
+});
+check('each class shows its own rigged body (knight, mage, rogue, barbarian)', Object.values(s).every(Boolean), JSON.stringify(s));
+
+// 27c. Art: blocking with a shield on the rig raises it in front of the body, face (the boss side,
+// item -Z) ahead; released, the holder gets its mounted rotation [0, π, 0] back. No shield: untouched.
+s = await run(async () => {
+  const g = window.game;
+  const out = {};
+  for (const c of ['tank', 'warrior']) {
+    window.asClass(c);
+    await window.settleModels();
+    const p = g.player;
+    const m = g.model;
+    g.step(20, { held: ['block'] });
+    g.step(0, null, true);
+    const V = p.pos.constructor;
+    const fwd = new V(-Math.sin(p.facing), 0, -Math.cos(p.facing));
+    const face = new V(0, 0, -1).applyQuaternion(m.shield.getWorldQuaternion(new m.root.quaternion.constructor()));
+    const rel = m.shield.getWorldPosition(new V()).sub(p.pos);
+    const raised = { rig: m.usingRig, items: m.shield.children.length, blocking: p.blocking, dot: +face.dot(fwd).toFixed(3), ahead: +rel.dot(fwd).toFixed(2), h: +rel.y.toFixed(2) };
+    const held = m.shield.rotation.toArray().slice(0, 3);
+    for (let i = 0; i < 15; i++) g.step(1, null, true);
+    const rest = m.shield.rotation.toArray().slice(0, 3);
+    const atRest = (r) => r[0] === 0 && Math.abs(r[1] - Math.PI) < 1e-6 && r[2] === 0;
+    out[c] = { ...raised, heldAtRest: atRest(held), restAfter: atRest(rest) };
+  }
+  return out;
+});
+check('blocking with a shield holds it up in front at chest height, facing ahead; released, it turns back',
+  s.tank.rig && s.tank.items === 1 && s.tank.blocking && s.tank.dot > 0.9 && s.tank.ahead > 0.35 && s.tank.h > 0.5 && s.tank.h < 1.0 &&
+    !s.tank.heldAtRest && s.tank.restAfter && s.warrior.rig && s.warrior.items === 0 && s.warrior.heldAtRest && s.warrior.restAfter,
+  JSON.stringify(s));
+
+// 27d. Art: clips frozen at speed 0 (scrubbed attacks, the roll's held crouch) fade out like any
+// other when the next clip starts: after a full attack and a roll, 30 drawn idle frames leave only
+// the idle clip with weight, nothing left mixed in under it.
+s = await run(async () => {
+  const g = window.game;
+  const out = {};
+  for (const c of ['warrior', 'tank']) {
+    window.asClass(c);
+    await window.settleModels();
+    const p = g.player;
+    const m = g.model;
+    const drawn = (n, v = null) => {
+      for (let i = 0; i < n; i++) g.step(1, v, true);
+    };
+    const through = (state) => {
+      for (let i = 0; i < 240 && p.state === state; i++) drawn(1);
+    };
+    drawn(30);
+    drawn(1, { held: ['attack'] });
+    const attacked = p.state === 'attack';
+    through('attack');
+    drawn(5);
+    drawn(1, { held: ['dodge'] });
+    const rolled = p.state === 'roll';
+    through('roll');
+    drawn(30);
+    const mixed = m.rig.mixer._actions
+      .filter((a) => a.isScheduled() && a.getEffectiveWeight() > 0.01)
+      .map((a) => `${a.getClip().name}:${a.getEffectiveWeight().toFixed(2)}${a.timeScale === 0 ? '(frozen)' : ''}`);
+    out[c] = { attacked, rolled, state: p.state, clip: m.rig.clip, mixed };
+  }
+  return out;
+});
+const onlyIdle = (r) =>
+  r.attacked && r.rolled && r.state === 'ground' && /Idle/.test(r.clip) && r.mixed.length === 1 && r.mixed[0].startsWith(`${r.clip}:`);
+check('after an attack and a roll, only the idle clip is still mixed in (frozen clips fade out too)',
+  onlyIdle(s.warrior) && onlyIdle(s.tank), JSON.stringify(s));
 
 // 28. Gear restrictions and class-aware drops.
 s = await run(() => {
@@ -1816,6 +2022,9 @@ s = await run2(() => {
     if (p.hp < before) hurt = true;
     if (b.move) moves.add(b.move);
   }
+  // The camera eases after a teleport; snap it so the bar's 50 m camera range does not depend on
+  // how many background frames happened to run.
+  g.cam.initialised = false;
   g.step(0, null, true);
   out.hurt = hurt;
   out.moves1 = [...moves].sort().join(',');
@@ -1836,6 +2045,7 @@ s = await run2(() => {
     if (b.move) moves.add(b.move);
   }
   out.moves2 = [...moves].sort().join(',');
+  g.cam.initialised = false;
   g.step(0, null, true);
   out.bar2 = document.querySelector('#bossbar b').textContent;
   // Kill it.
@@ -2078,6 +2288,5 @@ await page3.close();
 check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 await browser.close();
 server.kill();
-spawn('pkill', ['-f', `vite preview --port ${PORT}`]);
 console.log(failed ? `\n${failed} check(s) failed` : '\nall checks passed');
 process.exit(failed ? 1 : 0);

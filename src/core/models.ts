@@ -1,0 +1,109 @@
+import * as THREE from 'three';
+import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { addSkinnedOutline, toonMaterial } from './toon';
+
+/**
+ * glTF model loader with a cache. Each file is fetched and parsed once; callers get
+ * SkeletonUtils clones, so every enemy or villager has its own skeleton and mixer.
+ * Loading is asynchronous: models show their placeholder until the file is ready,
+ * and keep the placeholder for good if the file fails to load.
+ */
+
+const loader = new GLTFLoader();
+const pending = new Map<string, Promise<GLTF>>();
+const ready = new Map<string, GLTF>();
+const failed = new Set<string>();
+
+/** Resolve a path under `public/` against the site base (works under a GitHub Pages sub-path). */
+export function assetUrl(path: string): string {
+  return import.meta.env.BASE_URL + path;
+}
+
+/** Start loading a model (once). Resolves with the parsed file; rejects if it fails. */
+export function loadModel(path: string): Promise<GLTF> {
+  let p = pending.get(path);
+  if (!p) {
+    p = loader.loadAsync(assetUrl(path)).then(
+      (gltf) => {
+        prepare(gltf);
+        ready.set(path, gltf);
+        return gltf;
+      },
+      (err: unknown) => {
+        failed.add(path);
+        console.warn(`model ${path} failed to load; keeping the placeholder`, err);
+        throw err;
+      },
+    );
+    // Callers that only poll `modelState` must not see an unhandled rejection.
+    p.catch(() => {});
+    pending.set(path, p);
+  }
+  return p;
+}
+
+export type ModelState = 'none' | 'loading' | 'ready' | 'failed';
+
+export function modelState(path: string): ModelState {
+  if (ready.has(path)) return 'ready';
+  if (failed.has(path)) return 'failed';
+  return pending.has(path) ? 'loading' : 'none';
+}
+
+/** A fresh copy of a loaded model (own skeleton), or null if it is not ready. */
+export function cloneModel(path: string): THREE.Object3D | null {
+  const gltf = ready.get(path);
+  return gltf ? SkeletonUtils.clone(gltf.scene) : null;
+}
+
+/**
+ * A copy of one named node of a loaded model (with its children, outline included) and its
+ * local transform, e.g. a helmet off a character; null if the file is not ready or lacks it.
+ * For plain meshes: the copy shares geometry and materials with the file, so clone a material
+ * before changing it.
+ */
+export function cloneNode(path: string, name: string): THREE.Object3D | null {
+  const node = ready.get(path)?.scene.getObjectByName(THREE.PropertyBinding.sanitizeNodeName(name));
+  return node ? node.clone() : null;
+}
+
+/** The animation clips of a loaded model (shared, never modified). */
+export function modelClips(path: string): THREE.AnimationClip[] {
+  return ready.get(path)?.animations ?? [];
+}
+
+/** Resolves once every model requested so far has loaded or failed (tests wait on this). */
+export async function modelsSettled(): Promise<void> {
+  await Promise.allSettled([...pending.values()]);
+}
+
+/**
+ * One-time conversion of a loaded file to the game's look: toon shading with the
+ * pack's colour atlas, shadows, and a back-face outline on every mesh. Clones share
+ * these materials and outline meshes.
+ */
+function prepare(gltf: GLTF): void {
+  const mats = new Map<THREE.Material, THREE.MeshToonMaterial>();
+  const meshes: THREE.Mesh[] = [];
+  gltf.scene.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh);
+  });
+  for (const mesh of meshes) {
+    const src = mesh.material as THREE.MeshStandardMaterial;
+    let toon = mats.get(src);
+    if (!toon) {
+      toon = toonMaterial(src.color ?? 0xffffff, { map: src.map ?? null });
+      if (toon.map) {
+        toon.map.colorSpace = THREE.SRGBColorSpace;
+        // Keep the atlas crisp at the game's low render resolution.
+        toon.map.magFilter = THREE.NearestFilter;
+      }
+      mats.set(src, toon);
+    }
+    mesh.material = toon;
+    mesh.castShadow = true;
+    mesh.receiveShadow = false;
+    addSkinnedOutline(mesh, 0.04);
+  }
+}
