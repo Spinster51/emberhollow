@@ -23,7 +23,7 @@ function box(w: number, h: number, d: number, mat: THREE.Material, outline = 0.0
 
 /** Tint by base look so iron and leather pieces read differently. */
 const LOOK_COLOR: Record<Look, number> = {
-  sword: METAL, greatsword: METAL, woodShield: WOOD, ironShield: DARK_METAL, cap: LEATHER, helm: DARK_METAL,
+  sword: METAL, greatsword: METAL, mace: DARK_METAL, staff: WOOD, daggers: METAL, tome: 0x6a2f6a, parryDagger: METAL, woodShield: WOOD, ironShield: DARK_METAL, cap: LEATHER, helm: DARK_METAL,
   tunic: 0x5d7a3a, mail: DARK_METAL, gloves: LEATHER, gauntlets: DARK_METAL, boots: LEATHER, greaves: DARK_METAL,
   ring: GOLD, amulet: GOLD,
 };
@@ -49,6 +49,45 @@ export function buildItemMesh(item: Item): THREE.Group {
       const handle = box(0.06, 0.06, big ? 0.3 : 0.18, grip, 0);
       handle.position.z = 0.06;
       g.add(blade, guard, handle);
+      break;
+    }
+    case 'mace': {
+      const handle = box(0.07, 0.07, 0.8, grip, 0);
+      handle.position.z = -0.3;
+      const head = box(0.26, 0.26, 0.3, main);
+      head.position.z = -0.75;
+      const flange = box(0.36, 0.08, 0.2, trim, 0);
+      flange.position.z = -0.75;
+      g.add(handle, head, flange);
+      break;
+    }
+    case 'staff': {
+      const pole = box(0.07, 0.07, 1.7, main);
+      pole.position.z = -0.45;
+      const gem = box(0.18, 0.18, 0.18, gearMaterial(item.unique ? 0xff5a2a : 0x7fd7ff, item), 0.02);
+      gem.position.z = -1.35;
+      gem.rotation.z = Math.PI / 4;
+      const cradle = box(0.22, 0.05, 0.08, trim, 0);
+      cradle.position.z = -1.22;
+      g.add(pole, gem, cradle);
+      break;
+    }
+    case 'daggers':
+    case 'parryDagger': {
+      const blade = box(0.06, 0.05, 0.45, main);
+      blade.position.z = -0.3;
+      const guard = box(look === 'parryDagger' ? 0.3 : 0.16, 0.05, 0.05, trim, 0);
+      guard.position.z = -0.06;
+      g.add(blade, guard);
+      break;
+    }
+    case 'tome': {
+      const book = box(0.4, 0.5, 0.12, main);
+      const pages = box(0.36, 0.46, 0.13, toonMaterial(0xefe3c4), 0);
+      pages.position.x = 0.03;
+      const clasp = box(0.06, 0.12, 0.14, trim, 0);
+      clasp.position.x = 0.2;
+      g.add(book, pages, clasp);
       break;
     }
     case 'woodShield':

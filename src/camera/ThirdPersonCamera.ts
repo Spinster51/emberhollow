@@ -13,6 +13,7 @@ export class ThirdPersonCamera {
   private initialised = false;
   private trauma = 0;
   private shoulder = 0;
+  private aimBlend = 0;
   private shakeTime = 0;
 
   constructor(
@@ -41,17 +42,21 @@ export class ThirdPersonCamera {
     look: { dx: number; dy: number; zoom: number },
     dt: number,
     lock: THREE.Vector3 | null = null,
+    aiming = false,
   ): void {
     const sens = 0.0026;
     // While locked, the yaw is driven by followLock (called from the fixed simulation step).
     if (!lock) this.yaw -= look.dx * sens;
     this.pitch = Math.max(-0.35, Math.min(1.25, this.pitch + (lock ? 0 : look.dy * sens)));
     this.distance = Math.max(3, Math.min(12, this.distance + look.zoom * 0.6));
+    // Aiming (mage): zoom in over the shoulder.
+    this.aimBlend += ((aiming ? 1 : 0) - this.aimBlend) * (1 - Math.exp(-10 * dt));
+    const distance = this.distance + (2.4 - this.distance) * this.aimBlend;
 
     const focus = target.clone().add(new THREE.Vector3(0, 1.55, 0));
     // Locked on: move over the right shoulder (so the player does not hide the target) and look
     // a little toward the target so both stay on screen.
-    this.shoulder += ((lock ? 1 : 0) - this.shoulder) * (1 - Math.exp(-6 * dt));
+    this.shoulder += ((lock || aiming ? 1 : 0) - this.shoulder) * (1 - Math.exp(-6 * dt));
     focus.x += Math.cos(this.yaw) * 0.9 * this.shoulder;
     focus.z += -Math.sin(this.yaw) * 0.9 * this.shoulder;
     if (lock) {
@@ -72,12 +77,12 @@ export class ThirdPersonCamera {
     );
 
     // Pull in if terrain or a block is between the player and the camera.
-    let dist = this.distance;
+    let dist = distance;
     for (let i = 1; i <= 24; i++) {
-      const d = (this.distance * i) / 24;
+      const d = (distance * i) / 24;
       const p = this.smoothTarget.clone().addScaledVector(dir, d);
       if (this.world.isSolid(p, 0.35)) {
-        dist = Math.max(0.6, d - this.distance / 24);
+        dist = Math.max(0.6, d - distance / 24);
         break;
       }
     }

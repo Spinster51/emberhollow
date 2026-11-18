@@ -1,7 +1,9 @@
 // Keyboard, mouse (pointer lock) and gamepad input, merged into one set of actions.
 // Tests can drive the game through `setVirtual`, which bypasses real devices.
 
-export type Action = 'jump' | 'dodge' | 'interact' | 'attack' | 'block' | 'lockOn';
+export type Action =
+  | 'jump' | 'dodge' | 'interact' | 'attack' | 'block' | 'lockOn'
+  | 'skill1' | 'skill2' | 'skill3' | 'skill4';
 
 const KEY_ACTIONS: Record<string, Action> = {
   Space: 'jump',
@@ -9,13 +11,20 @@ const KEY_ACTIONS: Record<string, Action> = {
   ShiftRight: 'dodge',
   KeyE: 'interact',
   Tab: 'lockOn',
+  Digit1: 'skill1',
+  Digit2: 'skill2',
+  Digit3: 'skill3',
+  Digit4: 'skill4',
   Mouse0: 'attack',
   Mouse1: 'lockOn',
   Mouse2: 'block',
 };
 
-// Standard gamepad: A jump, B dodge, X attack, Y interact, LT lock-on, RT/RB block.
-const PAD_ACTIONS: Record<number, Action> = { 0: 'jump', 1: 'dodge', 2: 'attack', 3: 'interact', 5: 'block', 6: 'lockOn', 7: 'block' };
+// Standard gamepad: A jump, B dodge, X attack, Y interact, LT lock-on, RT/RB block, d-pad skills 1–4.
+const PAD_ACTIONS: Record<number, Action> = {
+  0: 'jump', 1: 'dodge', 2: 'attack', 3: 'interact', 5: 'block', 6: 'lockOn', 7: 'block',
+  12: 'skill1', 13: 'skill3', 14: 'skill4', 15: 'skill2',
+};
 
 export interface VirtualInput {
   moveX?: number;

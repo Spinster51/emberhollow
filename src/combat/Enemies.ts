@@ -58,21 +58,52 @@ export class Enemies {
     return out;
   }
 
-  /** Resolve a player sword strike against every enemy in the arc. */
+  /**
+   * Every player hit goes through here: fire damage, backstab bonus (assassin), burn, lifesteal.
+   * `from` is where the hit comes from (knockback direction). Returns the damage dealt.
+   */
+  damage(
+    e: Enemy,
+    player: Player,
+    hit: { damage: number; crit: boolean; poise: number; knockback: number; burn?: boolean; fire?: number },
+    from: THREE.Vector3,
+    fx: CombatFx[],
+  ): number {
+    if (!e.alive) return 0;
+    let damage = hit.damage + (hit.fire ?? 0);
+    if (player.stats.backstab > 0 && this.isBehind(e, player.pos)) damage *= 1 + player.stats.backstab;
+    e.takeHit({ damage, poise: hit.poise, knockback: hit.knockback, from }, fx, hit.crit);
+    if (hit.burn && e.alive) e.burnTime = TUNING.combat.burn.time;
+    if (player.stats.uniques.has('lifesteal')) player.heal(e.lastDamage * TUNING.combat.lifesteal);
+    return e.lastDamage;
+  }
+
+  /** Is `p` behind the enemy (outside its front 180°… narrowed to the back ~110°)? */
+  isBehind(e: Enemy, p: THREE.Vector3): boolean {
+    const f = e.facingVector();
+    const dx = p.x - e.pos.x;
+    const dz = p.z - e.pos.z;
+    const d = Math.hypot(dx, dz) || 1;
+    return (dx * f.x + dz * f.z) / d < -0.35;
+  }
+
+  /** Resolve a player melee strike against every enemy in the arc. */
   applyStrike(strike: Strike, player: Player, fx: CombatFx[]): { hits: number; dealt: number } {
     let hits = 0;
     let dealt = 0;
     const f = player.facingVector();
     for (const e of this.list) {
       if (!e.alive) continue;
-      if (!inArc(player.pos, f, e.pos, C.reach + e.stats.radius, C.arc)) continue;
-      const damage = strike.damage + strike.fire;
-      e.takeHit({ damage, poise: strike.poise, knockback: strike.knockback, from: player.pos.clone() }, fx, strike.crit);
-      dealt += e.lastDamage;
-      if (strike.burn && e.alive) e.burnTime = TUNING.combat.burn.time;
+      if (!inArc(player.pos, f, e.pos, (strike.reach ?? C.reach) + e.stats.radius, strike.arc ?? C.arc)) continue;
+      dealt += this.damage(e, player, strike, player.pos.clone(), fx);
       hits++;
     }
     return { hits, dealt };
+  }
+
+  /** Alive enemies within `r` of a point (skills). */
+  near(p: THREE.Vector3, r: number): Enemy[] {
+    return this.list.filter((e) => e.alive && Math.hypot(e.pos.x - p.x, e.pos.z - p.z) <= r + e.stats.radius && Math.abs(e.pos.y - p.y) < 3);
   }
 
   /** Push overlapping bodies apart (enemy–enemy and enemy–player). */
@@ -84,7 +115,8 @@ export class Enemies {
         const b = alive[j];
         this.pushApart(a.pos, b.pos, a.stats.radius + b.stats.radius, 0.5);
       }
-      if (player.state !== 'dead' && player.state !== 'roll' && Math.abs(player.pos.y - a.pos.y) < 1.5) {
+      // Rolls and skills (Charge) pass through bodies.
+      if (player.state !== 'dead' && player.state !== 'roll' && player.state !== 'skill' && Math.abs(player.pos.y - a.pos.y) < 1.5) {
         // The enemy gives way more than the player does.
         this.pushApart(a.pos, player.pos, a.stats.radius + TUNING.radius, 0.8);
       }

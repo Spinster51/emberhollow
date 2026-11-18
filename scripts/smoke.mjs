@@ -621,7 +621,317 @@ check('items move between bag and chest', s.stored && s.back);
 check('weapon mount shows a weapon; refuses gauntlets', s.shown && s.wrongSlot === false && /Weapon mount/.test(s.mountLabel ?? ''), s.mountLabel);
 check('armour stand shows armour; items can be taken back', s.stand && s.taken);
 
+// ================================================================ classes (milestone 4)
+await run(() => {
+  // New character of a class at the spawn; one enemy `dist` m ahead (frozen unless asked).
+  window.asClass = (cls, kind = 'bandit', dist = 30, frozen = true, dx = 0) => {
+    const g = window.game;
+    g.chooseClass(cls);
+    const e = window.arena(kind, dist, frozen, dx);
+    g.player.rand = () => 0.99; // no random crits
+    g.player.mana = g.player.stats.maxMana;
+    return e;
+  };
+  window.levelTo = (n) => {
+    const p = window.game.player;
+    while (p.level < n) p.gainXp(window.xpToNext(p.level));
+    p.mana = p.stats.maxMana;
+  };
+  window.cast = (slot) => window.game.skills.cast(slot, window.game.skillContext());
+});
+await run(() => {
+  window.xpToNext = (l) => Math.round(60 * Math.pow(l, 1.6));
+});
+
+// 27. Each class starts with its own weapon, HP and mana.
+s = await run(() => {
+  const out = {};
+  for (const c of ['warrior', 'tank', 'mage', 'assassin']) {
+    window.asClass(c);
+    const p = window.game.player;
+    out[c] = `${p.inv.equipped.weapon?.base}/${p.inv.equipped.offhand?.base ?? '-'}/${p.stats.maxHp}/${p.stats.maxMana}`;
+  }
+  return out;
+});
+check('classes start with their own gear and stats',
+  s.warrior === 'rustySword/-/100/50' && s.tank === 'rustyMace/woodShield/130/40' && s.mage === 'oakStaff/-/80/130' && s.assassin === 'rustyDaggers/-/85/60',
+  JSON.stringify(s));
+
+// 28. Gear restrictions and class-aware drops.
+s = await run(() => {
+  window.asClass('warrior');
+  const p = window.game.player;
+  const I = window.items;
+  p.inv.add(I.makeItem('oakStaff'));
+  const err = p.inv.equip(p.inv.bag.findIndex((x) => x?.base === 'oakStaff'), p.level);
+  let seed = 3;
+  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const bad = [];
+  for (let i = 0; i < 400; i++) {
+    const it = I.rollItem(rand, 2, undefined, 'mage');
+    if (!I.usableBy(it.base, 'mage')) bad.push(it.base);
+  }
+  return { err, bad: bad.slice(0, 3) };
+});
+check('a warrior cannot equip a staff', s.err === 'Only Mage can use this.', s.err);
+check('drops rolled for a class are usable by it', s.bad.length === 0, s.bad.join());
+
+// 29. XP, levels, attributes, skill tree, respec.
+s = await run(() => {
+  const e = window.asClass('warrior', 'bandit', 1.8);
+  const g = window.game;
+  const p = g.player;
+  e.takeHit({ damage: 999, poise: 0, knockback: 0, from: p.pos.clone() }, []);
+  g.step(1);
+  const xp = p.prog.xp;
+  p.hp = 10;
+  p.gainXp(window.xpToNext(1));
+  const out = { xp, level: p.level, ap: p.prog.attrPoints, sp: p.prog.skillPoints, healed: p.hp === p.stats.maxHp, maxHp: p.stats.maxHp };
+  const dm0 = p.stats.damageMult;
+  for (let i = 0; i < 5; i++) p.prog.allocate('str');
+  p.refreshStats();
+  out.dmgUp = p.stats.damageMult - dm0;
+  out.lockedErr = p.prog.rankUp('earthsplitter');
+  out.rankErr = p.prog.rankUp('wToughness');
+  p.refreshStats();
+  out.hpAfterRank = p.stats.maxHp;
+  window.levelTo(3);
+  p.inv.gold = 100;
+  g.charUI.show(true);
+  const respecErr = g.charUI.respec();
+  out.respec = `${respecErr}/${p.prog.attrPoints}/${p.prog.skillPoints}/${p.inv.gold}`;
+  out.nodes = document.querySelectorAll('.inv .node').length;
+  g.charUI.close();
+  return out;
+});
+check('a bandit kill gives 35 XP', s.xp === 35, `xp=${s.xp}`);
+check('level-up: +5 attribute points, +1 skill point, full heal, +4 HP', s.level === 2 && s.ap === 5 && s.sp === 1 && s.healed && s.maxHp === 104, JSON.stringify(s));
+check('5 Strength = +10% damage', Math.abs(s.dmgUp - 0.1) < 1e-9, s.dmgUp);
+check('skill tree: locked skills refuse points, passives apply', s.lockedErr === 'Unlocks at level 6.' && s.rankErr === null && s.hpAfterRank === 114, `${s.lockedErr} / ${s.rankErr} / hp ${s.hpAfterRank}`);
+check('respec at the book (level 3) refunds all points for 60 gold', s.respec === 'null/10/2/40', s.respec);
+check('skill tree shows 4 skills + 4 passives', s.nodes === 8, s.nodes);
+
+// 30. Warrior skills.
+s = await run(() => {
+  const g = window.game;
+  const out = {};
+  let e = window.asClass('warrior', 'bandit', 5);
+  const p = g.player;
+  const z0 = p.pos.z;
+  out.chargeErr = window.cast(0);
+  out.manaAfter = p.mana;
+  g.step(30);
+  out.charged = z0 - p.pos.z;
+  out.chargeHit = 70 - e.hp;
+  out.again = window.cast(0);
+  // Whirlwind: two enemies around you.
+  e = window.asClass('warrior', 'slime', 1.5);
+  window.levelTo(6);
+  const s2 = g.enemies.list.filter((x) => x.kind === 'slime')[1];
+  s2.pos.set(p.pos.x, p.pos.y, p.pos.z + 1.6);
+  s2.hp = 30;
+  e.hp = 30;
+  window.cast(1);
+  g.step(50);
+  out.whirl = [30 - e.hp, 30 - s2.hp];
+  // War Cry: +25% on the next strike.
+  e = window.asClass('warrior', 'bandit', 1.8);
+  window.levelTo(6);
+  window.cast(2);
+  g.step(30);
+  out.buff = p.damageBuffTime > 7;
+  window.press('attack');
+  window.until({}, () => g.hitStop > 0, 30);
+  out.cryHit = 70 - e.hp;
+  // Earthsplitter knocks down in a line.
+  e = window.asClass('warrior', 'bandit', 4);
+  window.levelTo(6);
+  window.cast(3);
+  g.step(40);
+  out.split = `${70 - e.hp}/${e.staggerKind}`;
+  return out;
+});
+check('Charge dashes ~8 m through an enemy (150%)', s.chargeErr === null && s.charged > 7 && s.charged < 9.5 && s.chargeHit === 18 && s.manaAfter === 35, `moved=${s.charged?.toFixed(1)} hit=${s.chargeHit} mana=${s.manaAfter}`);
+check('skills go on cooldown', /not ready/.test(s.again ?? ''), s.again);
+check('Whirlwind hits everyone around you 3 times', s.whirl[0] >= 24 && s.whirl[1] >= 24, s.whirl.join());
+check('War Cry: +25% damage', s.buff && s.cryHit === 15, `hit=${s.cryHit}`);
+check('Earthsplitter knocks down for 300%', s.split.startsWith('36/') && s.split.endsWith('knockdown'), s.split);
+
+// 31. Tank: block meter, parry → Riposte, Taunt, Shield Bash, Bulwark.
+s = await run(() => {
+  const g = window.game;
+  const out = {};
+  let e = window.asClass('tank', 'bandit', 2);
+  const p = g.player;
+  const hit = (dmg = 12, poise = 8) => p.takeHit({ damage: dmg, poise, knockback: 2, from: p.pos.clone().setZ(p.pos.z - 1.5) });
+  out.noParry = window.cast(0);
+  g.step(30, { held: ['block'] });
+  hit();
+  out.afterBlock = p.counter;
+  g.step(1);
+  g.step(3, { held: ['block'] });
+  out.parry = hit();
+  out.afterParry = p.counter;
+  g.step(1);
+  out.riposte = window.cast(0);
+  g.step(40);
+  out.ripHit = 70 - e.hp; // (2 + 3 × 0.45) × 13 = 43.55
+  out.meter = p.counter;
+  // Taunt pulls and slows a distant idle enemy.
+  e = window.asClass('tank', 'bandit', 8, false);
+  window.levelTo(6);
+  window.cast(1);
+  g.step(30);
+  out.taunt = `${e.tauntTime > 3}/${e.slowFactor}/${e.state}`;
+  // Shield Bash staggers.
+  e = window.asClass('tank', 'bandit', 1.8);
+  window.levelTo(6);
+  window.cast(2);
+  g.step(20);
+  out.bash = `${70 - e.hp}/${e.state}`;
+  // Bulwark halves damage and stops staggers.
+  window.asClass('tank');
+  window.levelTo(6);
+  window.cast(3);
+  g.step(20);
+  const before = p.hp;
+  hit(40, 100);
+  out.bulwark = `${before - p.hp}/${p.state}`;
+  return out;
+});
+check('Riposte needs a parry first', /needs a parry/.test(s.noParry ?? ''), s.noParry);
+check('blocking fills the counter meter (+10), parrying more (+35)', s.afterBlock === 10 && s.parry === 'parried' && s.afterParry === 45, `${s.afterBlock} / ${s.parry} / ${s.afterParry}`);
+check('Riposte after a parry hits hard and spends the meter', s.riposte === null && s.ripHit === 44 && s.meter === 0, `hit=${s.ripHit} meter=${s.meter}`);
+check('Taunt pulls and slows enemies', s.taunt === 'true/0.6/chase', s.taunt);
+check('Shield Bash staggers', s.bash === '16/stagger', s.bash);
+check('Bulwark: half damage, no stagger', s.bulwark.endsWith('/ground') && Number(s.bulwark.split('/')[0]) < 18, s.bulwark);
+
+// 32. Mage: bolts, Fireball, Frost Nova, Blink, Meteor, aiming.
+s = await run(() => {
+  const g = window.game;
+  const out = {};
+  let e = window.asClass('mage', 'bandit', 8);
+  const p = g.player;
+  window.press('attack');
+  g.step(40);
+  out.bolt = 70 - e.hp;
+  // Fireball: two slimes close together, 8 m away.
+  e = window.asClass('mage', 'slime', 8);
+  const s2 = g.enemies.list.filter((x) => x.kind === 'slime')[1];
+  s2.pos.set(e.pos.x + 1.2, e.pos.y, e.pos.z);
+  s2.hp = 30;
+  window.cast(0);
+  g.step(60);
+  out.fireball = [30 - e.hp, 30 - s2.hp, e.burnTime > 0 || e.hp < 30 - 28];
+  // Frost Nova freezes nearby enemies.
+  e = window.asClass('mage', 'bandit', 3, false);
+  window.levelTo(6);
+  window.cast(1);
+  g.step(15);
+  out.nova = `${e.state}/${e.slowTime > 0}`;
+  // Blink: 8 m in the move direction (forward).
+  window.asClass('mage');
+  window.levelTo(6);
+  const z0 = p.pos.z;
+  g.skills.cast(2, { ...g.skillContext(), wish: new p.pos.constructor(0, 0, -1) });
+  g.step(15);
+  out.blink = z0 - p.pos.z;
+  // Meteor on a locked target.
+  e = window.asClass('mage', 'bandit', 10);
+  window.levelTo(6);
+  g.lockOn.target = e;
+  g.step(1);
+  window.cast(3);
+  g.step(110);
+  out.meteor = 70 - e.hp;
+  // Right click = aim (not block).
+  window.asClass('mage');
+  g.step(10, { held: ['block'] });
+  out.aim = `${p.aiming}/${p.blocking}`;
+  return out;
+});
+check('mage bolt flies to the enemy (11 damage)', s.bolt === 11, `hit=${s.bolt}`);
+check('Fireball explodes on both slimes and burns', s.fireball[0] >= 28 && s.fireball[1] >= 28, JSON.stringify(s.fireball));
+check('Frost Nova freezes and slows', s.nova === 'stagger/true', s.nova);
+check('Blink teleports ~8 m', s.blink > 7.5 && s.blink < 8.5, s.blink?.toFixed(2));
+check('Meteor crashes on the target', s.meteor >= 66, `hit=${s.meteor}`);
+check('mage right click aims instead of blocking', s.aim === 'true/false', s.aim);
+
+// 33. Assassin: 4-hit combo, backstab, Shadowstep, Fan of Knives, Vanish, Eviscerate.
+s = await run(() => {
+  const g = window.game;
+  const out = {};
+  let e = window.asClass('assassin', 'bandit', 10);
+  const p = g.player;
+  out.combo = p.combo().length;
+  // Front vs back: same strike, enemy facing the player vs facing away.
+  e = window.asClass('assassin', 'bandit', 1.5);
+  window.press('attack');
+  window.until({}, () => g.hitStop > 0, 30);
+  out.front = 70 - e.hp;
+  e = window.asClass('assassin', 'bandit', 1.5);
+  e.facing = 0; // facing away (north)
+  window.press('attack');
+  window.until({}, () => g.hitStop > 0, 30);
+  out.back = 70 - e.hp;
+  // Shadowstep behind a target 8 m away; next hit crits.
+  e = window.asClass('assassin', 'bandit', 8);
+  window.cast(0);
+  g.step(15);
+  out.behind = g.enemies.isBehind(e, p.pos) && p.nextCrit;
+  window.press('attack');
+  window.until({}, () => g.hitStop > 0, 30);
+  out.critHit = 70 - e.hp;
+  // Fan of Knives.
+  e = window.asClass('assassin', 'bandit', 6);
+  window.levelTo(6);
+  window.cast(1);
+  g.step(30);
+  out.fan = 70 - e.hp;
+  // Vanish: a chasing bandit loses track.
+  e = window.asClass('assassin', 'bandit', 6, false);
+  window.levelTo(6);
+  g.step(30);
+  const chasing = e.state;
+  window.cast(2);
+  g.step(30);
+  out.vanish = `${chasing}->${e.state}/${p.stealthTime > 0}`;
+  // Eviscerate: 400%, doubled under 30% HP.
+  e = window.asClass('assassin', 'bandit', 1.8);
+  window.levelTo(6);
+  window.cast(3);
+  g.step(30);
+  out.evis = 70 - e.hp;
+  e = window.asClass('assassin', 'bandit', 1.8);
+  window.levelTo(6);
+  e.hp = 20;
+  window.cast(3);
+  g.step(30);
+  out.evisLow = e.alive;
+  return out;
+});
+check('assassin has a 4-hit dagger combo', s.combo === 4);
+check('backstab: +50% damage from behind', s.front === 8 && s.back === 12, `front=${s.front} back=${s.back}`);
+check('Shadowstep: appear behind the target, next hit crits', s.behind && s.critHit === 20, `behind=${s.behind} hit=${s.critHit}`);
+check('Fan of Knives hits ahead', s.fan >= 9, `hit=${s.fan}`);
+check('Vanish: enemies lose track of you', /^(chase|windup|active|recover)->(return|idle)\/true$/.test(s.vanish), s.vanish);
+check('Eviscerate 400%, double on a weak enemy', s.evis === 44 && s.evisLow === false, `hit=${s.evis} lowSurvived=${s.evisLow}`);
+
+// 34. Class pick screen and HUD.
+s = await run(() => {
+  const g = window.game;
+  g.showClassSelect();
+  const cards = document.querySelectorAll('.classcard').length;
+  const menu = g.menuOpen;
+  document.querySelectorAll('.classcard')[2].click();
+  g.step(1, null, true);
+  return { cards, menu, cls: g.player.cls, closed: !g.menuOpen, slots: document.querySelectorAll('.skillbar .skill').length, cross: document.querySelector('.crosshair').style.display };
+});
+check('class pick screen: 4 classes, picking one starts that class', s.cards === 4 && s.menu && s.cls === 'mage' && s.closed, JSON.stringify(s));
+check('skill bar shows 4 skills; mage gets a crosshair', s.slots === 4 && s.cross === '', JSON.stringify(s));
+
 if (shotsDir) {
+  await run(() => window.game.chooseClass('warrior'));
   await run(() => {
     const g = window.game;
     for (const e of g.enemies.list) {
@@ -724,6 +1034,52 @@ if (shotsDir) {
     for (let i = 0; i < 30; i++) g.step(1, null, true);
   });
   await shot('11-house-inside');
+
+  // Class pick screen.
+  await run(() => window.game.showClassSelect());
+  await shot('12-class-select');
+  await run(() => document.querySelectorAll('.classcard')[2].click());
+
+  // Each class in action near the bandit camp.
+  const action = async (cls, name, fn) => {
+    await run(([cls, fnSrc]) => {
+      const g = window.game;
+      g.chooseClass(cls);
+      window.levelTo(6);
+      for (const e of g.enemies.list) {
+        e.home.copy(window.homes.get(e));
+        e.reset();
+        e.frozen = true;
+      }
+      window.place(-18, 8, 0);
+      const p = g.player;
+      g.cam.pitch = 0.25;
+      g.cam.distance = 6;
+      const b = g.enemies.list.find((e) => e.kind === 'bandit');
+      b.pos.set(-18, g.world.groundAt(-18, 3.5, 1e9), 3.5);
+      b.facing = Math.PI;
+      p.mana = p.stats.maxMana;
+      new Function('g', 'p', 'b', fnSrc)(g, p, b);
+      for (let i = 0; i < 3; i++) g.step(1, null, true);
+    }, [cls, fn]);
+    await shot(name);
+  };
+  await action('mage', '13-mage', "window.cast(0); g.step(22);");
+  await action('tank', '14-tank', "g.step(20, { held: ['block'] }); b.pos.z = 6.6;");
+  await action('assassin', '15-assassin', "g.lockOn.target = b; g.step(20); window.cast(0); g.step(6); window.press('attack'); g.step(5);");
+  await action('warrior', '16-warrior', "window.cast(1); g.step(16);");
+
+  // Character menu.
+  await run(() => {
+    const g = window.game;
+    g.player.prog.allocate('str', 3);
+    g.player.prog.rankUp('charge');
+    g.player.prog.rankUp('wToughness');
+    g.charUI.show(false);
+    g.step(1);
+  });
+  await shot('17-skills-menu');
+  await run(() => window.game.charUI.close());
 }
 
 check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));

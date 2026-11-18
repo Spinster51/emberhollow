@@ -3,15 +3,17 @@ import type { Player } from '../player/Player';
 import type { Enemy } from '../combat/Enemy';
 import type { CombatFx } from '../combat/combat';
 import type { Interactable } from '../loot/Loot';
+import { SKILLS, xpToNext, MAX_LEVEL } from '../classes/classes';
+import type { Skills } from '../classes/Skills';
 
 const HELP = `WASD  move        Mouse  look / scroll zoom
 Space jump · climb-jump · open/close glider
       (on a wall + S: jump off)
 Shift tap: dodge-roll · hold: sprint
 Left click: attack (click again mid-swing = combo)
-Right click: block (block just in time = parry)
+Right click: block, parry (mage: aim) · 1–4 skills
 Tab / middle click: lock-on · flick mouse to switch
-E pick up / use · I inventory
+E pick up / use · I inventory · K skills
 Walk into a wall to climb · H hide help`;
 
 interface FloatText {
@@ -41,6 +43,14 @@ export class Hud {
   private feedBox: HTMLDivElement;
   private feedItems: { el: HTMLDivElement; age: number }[] = [];
   private goldText: HTMLDivElement;
+  private mpFill!: HTMLDivElement;
+  private mpText!: HTMLSpanElement;
+  private xpFill!: HTMLDivElement;
+  private lvl!: HTMLDivElement;
+  private buffs!: HTMLDivElement;
+  private skillbar!: HTMLDivElement;
+  private crosshair!: HTMLDivElement;
+  private slots: { root: HTMLDivElement; cd: HTMLDivElement; txt: HTMLSpanElement; lock: HTMLDivElement; cls: string; id: string }[] = [];
 
   constructor(
     root: HTMLElement,
@@ -49,8 +59,14 @@ export class Hud {
   ) {
     this.root = root;
     root.innerHTML = `
-      <div class="panel hp"><span>HP <span id="hp-text"></span></span><div class="bar"><div id="hp-fill"></div></div>
+      <div class="panel hp"><div class="lvl" id="lvl"></div>
+        <span>HP <span id="hp-text"></span></span><div class="bar"><div id="hp-fill"></div></div>
+        <span>Mana <span id="mp-text"></span></span><div class="bar mana"><div id="mp-fill"></div></div>
+        <div class="bar xp"><div id="xp-fill"></div></div>
+        <div class="buffs" id="buffs"></div>
         <div class="gold" id="gold"></div></div>
+      <div class="skillbar" id="skillbar"></div>
+      <div class="crosshair" id="crosshair"></div>
       <div class="interact" id="interact"></div>
       <div class="feed" id="feed"></div>
       <div class="panel debug" id="debug"></div>
@@ -77,6 +93,13 @@ export class Hud {
     this.interact = root.querySelector('#interact')!;
     this.feedBox = root.querySelector('#feed')!;
     this.goldText = root.querySelector('#gold')!;
+    this.mpFill = root.querySelector('#mp-fill')!;
+    this.mpText = root.querySelector('#mp-text')!;
+    this.xpFill = root.querySelector('#xp-fill')!;
+    this.lvl = root.querySelector('#lvl')!;
+    this.buffs = root.querySelector('#buffs')!;
+    this.skillbar = root.querySelector('#skillbar')!;
+    this.crosshair = root.querySelector('#crosshair')!;
     this.reticle = document.createElement('div');
     this.reticle.className = 'reticle';
     root.appendChild(this.reticle);
@@ -132,6 +155,60 @@ export class Hud {
     }
     this.toastTime -= dt;
     this.toast.style.opacity = this.toastTime > 0 ? '1' : '0';
+  }
+
+  /** Mana, XP, level, skill bar with cooldowns, buffs, tank counter meter, mage crosshair. */
+  updateClass(p: Player, skills: Skills): void {
+    const st = p.stats;
+    const def = p.prog.def;
+    this.mpFill.style.width = `${(p.mana / st.maxMana) * 100}%`;
+    this.mpText.textContent = `${Math.floor(p.mana)} / ${st.maxMana}`;
+    const need = xpToNext(p.level);
+    this.xpFill.style.width = p.level >= MAX_LEVEL ? '100%' : `${(p.prog.xp / need) * 100}%`;
+    const pts = p.prog.attrPoints + p.prog.skillPoints > 0 ? ' <b class="pts">+ points (K)</b>' : '';
+    this.lvl.innerHTML = `${def.name} · Level ${p.level}${p.level < MAX_LEVEL ? ` <small>${p.prog.xp}/${need} XP</small>` : ''}${pts}`;
+
+    const b: string[] = [];
+    if (p.damageBuffTime > 0) b.push(`War Cry ${p.damageBuffTime.toFixed(0)}s`);
+    if (p.guardTime > 0) b.push(`Bulwark ${p.guardTime.toFixed(0)}s`);
+    if (p.stealthTime > 0) b.push(`Stealth ${p.stealthTime.toFixed(0)}s`);
+    if (p.nextCrit) b.push('Next hit crits');
+    if (p.cls === 'tank') b.push(`Counter ${Math.round(p.counter)}%${p.sinceParry < 1.5 ? ' — RIPOSTE (1)!' : ''}`);
+    this.buffs.textContent = b.join(' · ');
+
+    // Skill bar (rebuilt when the class changes).
+    if (this.slots[0]?.cls !== def.id) {
+      this.skillbar.innerHTML = '';
+      this.slots = def.skills.map((id, i) => {
+        const sk = SKILLS[id];
+        const root = document.createElement('div');
+        root.className = 'skill';
+        root.title = `${sk.name} — ${sk.desc}`;
+        root.innerHTML = `<i>${i + 1}</i><span>${sk.short}</span><div class="cd"></div><div class="lock"></div><small>${sk.mana || ''}</small>`;
+        this.skillbar.appendChild(root);
+        return {
+          root, cls: def.id, id,
+          cd: root.querySelector('.cd') as HTMLDivElement,
+          txt: root.querySelector('span') as HTMLSpanElement,
+          lock: root.querySelector('.lock') as HTMLDivElement,
+        };
+      });
+    }
+    for (const s of this.slots) {
+      const sk = SKILLS[s.id];
+      const left = skills.remaining(s.id);
+      const unlocked = p.prog.skillUnlocked(s.id);
+      s.cd.style.height = left > 0 ? `${Math.min(1, left / sk.cooldown) * 100}%` : '0';
+      s.cd.textContent = left > 0.05 ? left.toFixed(left < 1 ? 1 : 0) : '';
+      s.lock.style.display = unlocked ? 'none' : '';
+      s.lock.textContent = `Lv ${sk.unlock}`;
+      const ready = s.id === 'riposte' ? p.sinceParry < 1.5 : true;
+      s.root.classList.toggle('nomana', unlocked && p.mana < sk.mana);
+      s.root.classList.toggle('dim', unlocked && !ready);
+    }
+
+    this.crosshair.style.display = def.secondary === 'aim' && p.state !== 'dead' ? '' : 'none';
+    this.crosshair.classList.toggle('aiming', p.aiming);
   }
 
   /** Interaction prompt, pick-up feed and gold. */

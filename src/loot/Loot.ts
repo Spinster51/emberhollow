@@ -5,6 +5,7 @@ import { toonMaterial } from '../core/toon';
 import { buildItemMesh } from '../items/ItemMesh';
 import { MATERIALS, RARITY_INFO, rollItem, type Item } from '../items/items';
 import type { Enemy } from '../combat/Enemy';
+import type { ClassId } from '../classes/classes';
 import type { Player } from '../player/Player';
 import type { World } from '../world/World';
 
@@ -46,13 +47,15 @@ export class Loot {
   constructor(private world: World) {}
 
   /** Roll an enemy's loot table and scatter the drops around its body. */
-  dropFor(e: Enemy): void {
+  dropFor(e: Enemy, cls?: ClassId): void {
     const t = TUNING.enemies.loot[e.kind];
     const at = e.pos.clone();
     const gold = t.gold[0] + Math.floor(this.rand() * (t.gold[1] - t.gold[0] + 1));
     if (gold > 0) this.spawn({ kind: 'gold', amount: gold }, at);
     if (this.rand() < t.materialChance) this.spawn({ kind: 'material', material: t.material, amount: 1 }, at);
-    if (this.rand() < t.gear) this.spawn({ kind: 'item', item: rollItem(this.rand, t.level), amount: 1 }, at);
+    // Gear mostly drops for your own class (some for others, for the shared chest).
+    const forCls = this.rand() < 0.8 ? cls : undefined;
+    if (this.rand() < t.gear) this.spawn({ kind: 'item', item: rollItem(this.rand, t.level, undefined, forCls), amount: 1 }, at);
   }
 
   dropItem(item: Item, at: THREE.Vector3): Drop {

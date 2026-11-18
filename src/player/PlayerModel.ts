@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { addOutline, toonMaterial } from '../core/toon';
 import type { Player } from './Player';
 import { buildItemMesh } from '../items/ItemMesh';
+import { lookOf } from '../items/items';
+import { CLASSES } from '../classes/classes';
 
 /**
  * Placeholder blocky adventurer with procedural animation. Replaced by the rigged
@@ -23,12 +25,19 @@ export class PlayerModel {
   private chestGear = new THREE.Group();
   private hair: THREE.Mesh;
   private gearVersion = -1;
+  private tunicMat: THREE.MeshToonMaterial;
+  /** Second dagger in the left hand (assassin). */
+  private offDagger = new THREE.Group();
+  private ghost = false;
+  private ghostMat = new THREE.MeshBasicMaterial({ color: 0x223044, transparent: true, opacity: 0.35, depthWrite: false });
+  private realMats = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>();
   private phase = 0;
   private gliderOpen = 0;
 
   constructor() {
     const skin = toonMaterial(0xf0c39a);
     const tunic = toonMaterial(0x3f6fb5);
+    this.tunicMat = tunic;
     const belt = toonMaterial(0x5b3a20);
     const pants = toonMaterial(0x4a3b2c);
     const hair = toonMaterial(0xb5582e);
@@ -88,6 +97,8 @@ export class PlayerModel {
     this.shield.rotation.y = Math.PI / 2;
     this.shield.scale.setScalar(0.85);
     this.armL.add(this.shield);
+    this.offDagger.position.y = -0.58;
+    this.armL.add(this.offDagger);
 
     // Glider: a cloth wing on two poles, held above the head.
     const cloth = new THREE.Mesh(
@@ -113,8 +124,9 @@ export class PlayerModel {
 
   /** Show the equipped weapon, off-hand, helmet and chest piece. */
   private refreshGear(p: Player): void {
-    if (this.gearVersion === p.inv.version) return;
-    this.gearVersion = p.inv.version;
+    if (this.gearVersion === p.inv.version + p.prog.version * 1e6) return;
+    this.gearVersion = p.inv.version + p.prog.version * 1e6;
+    this.tunicMat.color.setHex(CLASSES[p.cls].colour);
     const eq = p.inv.equipped;
     const fill = (holder: THREE.Group, item: typeof eq.weapon) => {
       holder.clear();
@@ -125,6 +137,11 @@ export class PlayerModel {
     fill(this.headGear, eq.helmet);
     fill(this.chestGear, eq.chest);
     this.hair.visible = !eq.helmet;
+    // Staffs are held upright; daggers come in pairs.
+    const look = eq.weapon ? lookOf(eq.weapon) : null;
+    this.sword.rotation.x = look === 'staff' ? Math.PI / 2 : 0;
+    this.offDagger.clear();
+    if (look === 'daggers' && eq.weapon && !eq.offhand) this.offDagger.add(buildItemMesh(eq.weapon));
   }
 
   update(p: Player, dt: number): void {
@@ -203,6 +220,32 @@ export class PlayerModel {
         }
         break;
       }
+      case 'skill': {
+        // Generic casting / skill poses.
+        const id = p.skill?.id ?? '';
+        if (id === 'whirlwind') {
+          twist = p.stateTime * 18;
+          armR = -1.5;
+          armSpreadR = 1.4;
+          armL = -1.4;
+          armSpreadL = -1.4;
+        } else if (id === 'charge' || id === 'shieldBash') {
+          this.body.rotation.x = -0.35;
+          armR = -1.4;
+          armL = -1.6;
+        } else if (id === 'earthsplitter' || id === 'eviscerate' || id === 'riposte') {
+          const k = Math.min(1, p.stateTime / (p.skill!.time * 0.6));
+          armR = armL = -3.0 + k * 3.2;
+          this.body.rotation.x = -0.4 * k;
+        } else {
+          // Spells, cries, throws: arms up and forward.
+          armR = -2.2;
+          armL = -1.8;
+          armSpreadL = 0.3;
+          armSpreadR = -0.3;
+        }
+        break;
+      }
       case 'attack': {
         // Wind up (arm back) → swing across → recover. Strikes alternate sides; the 3rd is overhead.
         const a = p.attackTimes();
@@ -264,6 +307,7 @@ export class PlayerModel {
       armSpreadL = -0.6;
     }
     this.body.rotation.y = twist;
+    this.setGhost(p.stealthTime > 0);
 
     const lerp = Math.min(1, dt * (p.state === 'attack' ? 40 : 18));
     this.armL.rotation.x += (armL - this.armL.rotation.x) * lerp;
@@ -282,5 +326,22 @@ export class PlayerModel {
     this.lastFacing = p.facing;
     this.smoothedTurn += (d / Math.max(dt, 1e-4) - this.smoothedTurn) * Math.min(1, dt * 5);
     return this.smoothedTurn;
+  }
+
+  /** Stealth look: swap every mesh to a dim see-through material (and back). */
+  private setGhost(on: boolean): void {
+    if (on === this.ghost) return;
+    this.ghost = on;
+    this.root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      if (on) {
+        this.realMats.set(m, m.material);
+        m.material = this.ghostMat;
+      } else if (this.realMats.has(m)) {
+        m.material = this.realMats.get(m)!;
+      }
+    });
+    if (!on) this.realMats.clear();
   }
 }

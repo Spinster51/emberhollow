@@ -1,6 +1,8 @@
 // Items: slots, rarities, base types, random affixes, legendary uniques, and the stats they add.
 // All names are original. Numbers are first guesses for play-testing.
 
+import type { ClassId } from '../classes/classes';
+
 export type Slot = 'weapon' | 'offhand' | 'helmet' | 'chest' | 'gloves' | 'boots' | 'ring' | 'amulet';
 export const SLOTS: Slot[] = ['weapon', 'offhand', 'helmet', 'chest', 'gloves', 'boots', 'ring', 'amulet'];
 export const SLOT_NAMES: Record<Slot, string> = {
@@ -32,6 +34,7 @@ export interface Stats {
   fireDamage: number;
   fireRes: number;
   block: number;
+  mana: number;
   str: number;
   int: number;
   dex: number;
@@ -41,7 +44,7 @@ export type StatKey = keyof Stats;
 
 export const emptyStats = (): Stats => ({
   damage: 0, damagePct: 0, armour: 0, hp: 0, stamina: 0, crit: 0, attackSpeed: 0, moveSpeed: 0,
-  cooldown: 0, fireDamage: 0, fireRes: 0, block: 0, str: 0, int: 0, dex: 0, vit: 0,
+  cooldown: 0, fireDamage: 0, fireRes: 0, block: 0, mana: 0, str: 0, int: 0, dex: 0, vit: 0,
 });
 
 /** How each stat is shown in tooltips. */
@@ -58,6 +61,7 @@ export const STAT_LABEL: Record<StatKey, (v: number) => string> = {
   fireDamage: (v) => `+${Math.round(v)} fire damage`,
   fireRes: (v) => `+${pct(v)} fire resistance`,
   block: (v) => `${pct(v)} block strength`,
+  mana: (v) => `+${Math.round(v)} mana`,
   str: (v) => `+${Math.round(v)} Strength`,
   int: (v) => `+${Math.round(v)} Intelligence`,
   dex: (v) => `+${Math.round(v)} Dexterity`,
@@ -69,8 +73,8 @@ function pct(v: number): string {
 
 /** Visual style of the base, used by the 3D models. */
 export type Look =
-  | 'sword' | 'greatsword' | 'woodShield' | 'ironShield' | 'cap' | 'helm' | 'tunic' | 'mail'
-  | 'gloves' | 'gauntlets' | 'boots' | 'greaves' | 'ring' | 'amulet';
+  | 'sword' | 'greatsword' | 'mace' | 'staff' | 'daggers' | 'woodShield' | 'ironShield' | 'tome' | 'parryDagger'
+  | 'cap' | 'helm' | 'tunic' | 'mail' | 'gloves' | 'gauntlets' | 'boots' | 'greaves' | 'ring' | 'amulet';
 
 export interface Base {
   id: string;
@@ -79,14 +83,26 @@ export interface Base {
   look: Look;
   /** Built-in stats at item level 1 (they grow 10 % per level). */
   implicit: Partial<Stats>;
+  /** Classes that can equip it (everyone if omitted). */
+  classes?: ClassId[];
+  /** Starting gear: never dropped. */
+  starter?: boolean;
 }
 
 export const BASES: Base[] = [
-  { id: 'rustySword', name: 'Rusty Sword', slot: 'weapon', look: 'sword', implicit: { damage: 12 } },
-  { id: 'ironSword', name: 'Iron Sword', slot: 'weapon', look: 'sword', implicit: { damage: 14 } },
-  { id: 'greatsword', name: 'Greatsword', slot: 'weapon', look: 'greatsword', implicit: { damage: 20, attackSpeed: -0.15 } },
-  { id: 'woodShield', name: 'Wooden Shield', slot: 'offhand', look: 'woodShield', implicit: { block: 0.5, armour: 3 } },
-  { id: 'ironShield', name: 'Iron Shield', slot: 'offhand', look: 'ironShield', implicit: { block: 0.6, armour: 6 } },
+  { id: 'rustySword', name: 'Rusty Sword', slot: 'weapon', look: 'sword', implicit: { damage: 12 }, classes: ['warrior'], starter: true },
+  { id: 'ironSword', name: 'Iron Sword', slot: 'weapon', look: 'sword', implicit: { damage: 14 }, classes: ['warrior'] },
+  { id: 'greatsword', name: 'Greatsword', slot: 'weapon', look: 'greatsword', implicit: { damage: 20, attackSpeed: -0.15 }, classes: ['warrior'] },
+  { id: 'rustyMace', name: 'Rusty Mace', slot: 'weapon', look: 'mace', implicit: { damage: 13 }, classes: ['tank'], starter: true },
+  { id: 'ironMace', name: 'Flanged Mace', slot: 'weapon', look: 'mace', implicit: { damage: 16 }, classes: ['tank'] },
+  { id: 'oakStaff', name: 'Oak Staff', slot: 'weapon', look: 'staff', implicit: { damage: 11, mana: 10 }, classes: ['mage'], starter: true },
+  { id: 'runedStaff', name: 'Runed Staff', slot: 'weapon', look: 'staff', implicit: { damage: 14, mana: 20 }, classes: ['mage'] },
+  { id: 'rustyDaggers', name: 'Rusty Daggers', slot: 'weapon', look: 'daggers', implicit: { damage: 11 }, classes: ['assassin'], starter: true },
+  { id: 'steelDaggers', name: 'Steel Daggers', slot: 'weapon', look: 'daggers', implicit: { damage: 13, crit: 0.03 }, classes: ['assassin'] },
+  { id: 'woodShield', name: 'Wooden Shield', slot: 'offhand', look: 'woodShield', implicit: { block: 0.5, armour: 3 }, classes: ['warrior', 'tank'] },
+  { id: 'ironShield', name: 'Iron Shield', slot: 'offhand', look: 'ironShield', implicit: { block: 0.6, armour: 6 }, classes: ['warrior', 'tank'] },
+  { id: 'tome', name: 'Spell Tome', slot: 'offhand', look: 'tome', implicit: { mana: 20 }, classes: ['mage'] },
+  { id: 'parryDagger', name: 'Parrying Dagger', slot: 'offhand', look: 'parryDagger', implicit: { crit: 0.03 }, classes: ['assassin'] },
   { id: 'cap', name: 'Leather Cap', slot: 'helmet', look: 'cap', implicit: { armour: 3 } },
   { id: 'helm', name: 'Iron Helm', slot: 'helmet', look: 'helm', implicit: { armour: 6 } },
   { id: 'tunic', name: 'Padded Tunic', slot: 'chest', look: 'tunic', implicit: { armour: 5 } },
@@ -124,6 +140,7 @@ const AFFIXES: AffixDef[] = [
   { stat: 'fireDamage', min: 2, max: 5, prefix: 'Burning', slots: ['weapon', 'gloves', 'ring'] },
   { stat: 'fireRes', min: 0.05, max: 0.15, prefix: 'Fireproof' },
   { stat: 'stamina', min: 5, max: 15, prefix: 'Tireless' },
+  { stat: 'mana', min: 5, max: 15, prefix: 'Wise', slots: ['weapon', 'offhand', 'helmet', 'ring', 'amulet'] },
 ];
 
 /** Legendary unique effects. */
@@ -140,6 +157,9 @@ export const UNIQUES: Unique[] = [
   { id: 'thirstBand', name: 'Band of Thirst', base: 'copperRing', effect: 'lifesteal', text: 'Heal 8% of the damage you deal.' },
   { id: 'driftstep', name: 'Driftstep Boots', base: 'boots', effect: 'freeRoll', text: 'Dodge-rolls cost no stamina.' },
   { id: 'heartstone', name: 'Heartstone', base: 'boneCharm', effect: 'regen', text: 'Regenerate 2 HP per second.' },
+  { id: 'emberMaul', name: 'Ember Maul', base: 'ironMace', effect: 'burn', text: 'Hits set enemies alight: 4 fire damage per second for 3 s.' },
+  { id: 'cinderstaff', name: 'Cinderstaff', base: 'runedStaff', effect: 'burn', text: 'Hits set enemies alight: 4 fire damage per second for 3 s.' },
+  { id: 'bloodfangs', name: 'Bloodfangs', base: 'steelDaggers', effect: 'lifesteal', text: 'Heal 8% of the damage you deal.' },
 ];
 export const UNIQUE_BY_ID = Object.fromEntries(UNIQUES.map((u) => [u.id, u])) as Record<string, Unique>;
 
@@ -201,14 +221,21 @@ function nameFor(base: Base, affixes: Affix[]): string {
   return `${AFFIXES.find((d) => d.stat === best.stat)!.prefix} ${base.name}`;
 }
 
-/** Roll a random item. `rand` returns [0, 1). */
-export function rollItem(rand: () => number, level: number, rarity?: Rarity): Item {
+export function usableBy(baseId: string, cls: ClassId): boolean {
+  const c = BASE_BY_ID[baseId].classes;
+  return !c || c.includes(cls);
+}
+
+/** Roll a random item. `rand` returns [0, 1). With `cls`, only gear that class can use drops. */
+export function rollItem(rand: () => number, level: number, rarity?: Rarity, cls?: ClassId): Item {
   rarity ??= rollRarity(rand);
   if (rarity === 'legendary') {
-    const u = UNIQUES[Math.floor(rand() * UNIQUES.length)];
+    const pool = UNIQUES.filter((u) => !cls || usableBy(u.base, cls));
+    const u = pool[Math.floor(rand() * pool.length)];
     return makeItem(u.base, 'legendary', level, rollAffixes(rand, BASE_BY_ID[u.base].slot, level, 3), u.id);
   }
-  const base = BASES.filter((b) => b.id !== 'rustySword')[Math.floor(rand() * (BASES.length - 1))];
+  const pool = BASES.filter((b) => !b.starter && (!cls || usableBy(b.id, cls)));
+  const base = pool[Math.floor(rand() * pool.length)];
   return makeItem(base.id, rarity, level, rollAffixes(rand, base.slot, level, RARITY_INFO[rarity].affixes));
 }
 

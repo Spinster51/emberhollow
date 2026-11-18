@@ -11,7 +11,12 @@ import type { CombatFx } from './combat/combat';
 import { TUNING } from './config';
 import { Loot, type Interactable } from './loot/Loot';
 import { InventoryUI } from './ui/InventoryUI';
+import { CharacterUI, ClassSelect } from './ui/CharacterUI';
 import { Home } from './home/Home';
+import { Projectiles } from './combat/Projectiles';
+import { xpFor, type ClassId } from './classes/classes';
+import { Skills, type SkillContext } from './classes/Skills';
+import type { Enemy } from './combat/Enemy';
 
 const STEP = 1 / 60;
 const PIXEL_KEY = 'emberhollow.pixelScale';
@@ -50,7 +55,11 @@ export class Game {
   /** While a menu is open the world keeps running but ignores game input. */
   menuOpen = false;
   readonly ui: InventoryUI;
+  readonly charUI: CharacterUI;
+  readonly classSelect: ClassSelect;
   readonly home: Home;
+  readonly projectiles: Projectiles;
+  readonly skills = new Skills();
   private sun: THREE.DirectionalLight;
   private accumulator = 0;
   private last = performance.now();
@@ -88,17 +97,26 @@ export class Game {
     this.scene.add(this.enemies.group);
     this.loot = new Loot(this.world);
     this.scene.add(this.loot.group);
+    this.projectiles = new Projectiles(this.world);
+    this.scene.add(this.projectiles.group);
     this.cam = new ThirdPersonCamera(this.camera, this.world);
     this.hud = new Hud(hudRoot, (s) => this.setPixelScale(s), this.pixelScale);
     this.ui = new InventoryUI(
       hudRoot,
       this.player.inv,
       () => this.player.level,
-      (open) => (this.menuOpen = open),
+      () => this.player.stats,
+      () => this.updateMenus(),
       (item) => this.loot.dropItem(item, this.player.pos),
       (msg) => this.player.events.push(msg),
     );
-    this.home = new Home(this.world, this.ui);
+    this.charUI = new CharacterUI(hudRoot, this.player, () => this.updateMenus(), (msg) => this.player.events.push(msg));
+    this.classSelect = new ClassSelect(hudRoot, (cls) => {
+      this.chooseClass(cls);
+      this.updateMenus();
+    });
+    this.classSelect.hide();
+    this.home = new Home(this.world, this.ui, () => this.charUI.show(true));
     this.scene.add(this.home.group);
     this.interactSources.push(() => this.home.interactables(this.player.pos));
 
@@ -163,18 +181,35 @@ export class Game {
     const target = this.lockOn.target;
     if (target) this.cam.followLock(p.pos, target.pos, STEP);
 
+    this.computeAim(target);
+    const ctx = this.skillContext(target);
+    for (let i = 0; i < 4; i++) {
+      if (!this.input.consumePress(`skill${i + 1}` as 'skill1')) continue;
+      const err = this.skills.cast(i, ctx);
+      if (err && err !== 'busy') p.events.push(err);
+    }
+    this.skills.update(STEP, ctx);
     p.update(STEP, this.input, this.cam.yaw, target ? target.pos : null);
-    if (p.strike) {
-      const { hits, dealt } = this.enemies.applyStrike(p.strike, p, this.fx);
-      if (p.stats.uniques.has('lifesteal')) p.heal(dealt * TUNING.combat.lifesteal);
+    if (p.strike?.projectile) {
+      // Mage bolt from the staff toward the aim point.
+      const from = p.pos.clone().add(new THREE.Vector3(0, 1.4, 0)).addScaledVector(p.facingVector(), 0.7);
+      const vel = p.aimPoint.clone().sub(from).normalize().multiplyScalar(30);
+      this.projectiles.spawn({ kind: 'bolt', from, vel, ...p.strike, life: 1.2 });
+    } else if (p.strike) {
+      const { hits } = this.enemies.applyStrike(p.strike, p, this.fx);
       if (hits > 0) {
-        const heavy = p.strike.index === TUNING.combat.combo.length - 1;
+        const heavy = p.strike.index === p.combo().length - 1;
         this.hitStop = heavy ? TUNING.combat.hitStop.heavy : TUNING.combat.hitStop.light;
         this.cam.addTrauma(heavy ? 0.35 : 0.2);
       }
     }
+    this.projectiles.update(STEP, this.enemies, p, this.fx);
     this.enemies.update(STEP, p, this.fx);
-    for (const e of this.enemies.collectKills()) this.loot.dropFor(e);
+    for (const e of this.enemies.collectKills()) {
+      this.loot.dropFor(e, p.cls);
+      const t = TUNING.enemies.loot[e.kind];
+      p.gainXp(xpFor(t.xp, t.level, p.level));
+    }
     this.loot.update(STEP, p);
 
     this.focus = this.findFocus();
@@ -189,6 +224,88 @@ export class Game {
     }
     p.fx.length = 0;
     this.input.endStep();
+  }
+
+  skillContext(target: Enemy | null = this.lockOn.target): SkillContext {
+    const yaw = this.cam.yaw;
+    const mx = this.input.moveX;
+    const my = this.input.moveY;
+    return {
+      player: this.player,
+      enemies: this.enemies,
+      projectiles: this.projectiles,
+      world: this.world,
+      fx: this.fx,
+      target,
+      camYaw: yaw,
+      wish: new THREE.Vector3(-Math.sin(yaw) * my + Math.cos(yaw) * mx, 0, -Math.cos(yaw) * my - Math.sin(yaw) * mx),
+      shake: (a) => this.cam.addTrauma(a),
+      faceCamera: () => (this.cam.yaw = this.player.facing),
+      hitStop: (f) => (this.hitStop = Math.max(this.hitStop, f)),
+    };
+  }
+
+  /** Show the class pick screen (new character). */
+  showClassSelect(): void {
+    this.classSelect.show();
+    this.updateMenus();
+  }
+
+  private updateMenus(): void {
+    this.menuOpen = this.ui.isOpen || this.charUI.isOpen || this.classSelect.visible;
+    if (this.menuOpen) document.exitPointerLock?.();
+  }
+
+  /** Start a new character of the given class (class is permanent per character). */
+  chooseClass(cls: ClassId): void {
+    this.player.setClass(cls);
+    this.skills.reset();
+    this.lockOn.target = null;
+  }
+
+  /**
+   * Where ranged attacks go: the lock-on target; while aiming, the crosshair (camera ray);
+   * otherwise the enemy nearest the centre of view within 20°, or straight ahead.
+   */
+  private computeAim(target: Enemy | null): void {
+    const p = this.player;
+    const head = p.pos.clone().add(new THREE.Vector3(0, 1.4, 0));
+    if (target) {
+      p.aimPoint.copy(target.centre());
+      return;
+    }
+    if (p.aiming) {
+      const origin = this.camera.position.clone();
+      const dir = new THREE.Vector3();
+      this.camera.getWorldDirection(dir);
+      for (let d = 1; d <= 40; d += 0.5) {
+        const q = origin.clone().addScaledVector(dir, d);
+        const hitEnemy = this.enemies.list.find((e) => e.alive && e.centre().distanceTo(q) < e.stats.radius + 0.4);
+        if (hitEnemy || (d > 3 && this.world.isSolid(q, 0))) {
+          p.aimPoint.copy(hitEnemy ? hitEnemy.centre() : q);
+          return;
+        }
+      }
+      p.aimPoint.copy(origin.addScaledVector(dir, 40));
+      return;
+    }
+    const fwd = new THREE.Vector3(-Math.sin(this.cam.yaw), 0, -Math.cos(this.cam.yaw));
+    let best: Enemy | null = null;
+    let bestScore = Infinity;
+    for (const e of this.enemies.list) {
+      if (!e.alive) continue;
+      const to = e.pos.clone().sub(p.pos).setY(0);
+      const d = to.length();
+      if (d > 25 || d < 0.1) continue;
+      const cos = to.dot(fwd) / d;
+      if (cos < Math.cos((20 * Math.PI) / 180)) continue;
+      const score = d * (2 - cos);
+      if (score < bestScore) {
+        bestScore = score;
+        best = e;
+      }
+    }
+    p.aimPoint.copy(best ? best.centre() : head.addScaledVector(fwd, 25));
   }
 
   private findFocus(): Interactable | null {
@@ -220,7 +337,7 @@ export class Game {
     const look = this.input.takeLook();
     const target = this.lockOn.target;
     if (target) this.lockOn.flick(look.dx, this.player, this.enemies.list);
-    this.cam.update(this.player.pos, look, dt, target ? target.centre() : null);
+    this.cam.update(this.player.pos, look, dt, target ? target.centre() : null, this.player.aiming);
     this.model.update(this.player, dt);
     this.enemies.updateModels(dt);
     this.loot.animate(performance.now() / 1000);
@@ -233,6 +350,8 @@ export class Game {
     this.hud.updateLoot(this.focus, this.loot.feed, this.player.inv.gold, dt);
     this.loot.feed.length = 0;
     this.ui.update();
+    this.charUI.update();
+    this.hud.updateClass(this.player, this.skills);
     this.fx.length = 0;
     this.renderer.render(this.scene, this.camera);
   }

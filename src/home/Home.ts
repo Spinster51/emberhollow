@@ -27,10 +27,12 @@ export class Home {
   readonly floorY: number;
   /** Door centre, outside the house. */
   readonly door: THREE.Vector3;
+  readonly bookPos: THREE.Vector3;
 
   constructor(
     world: World,
     private ui: InventoryUI,
+    private onBook: () => void,
   ) {
     const c = world.homeSite;
     // 12 × 10 m: roomy enough for the camera to stay behind the player indoors.
@@ -119,6 +121,16 @@ export class Home {
     leg.position.set(tx, fy + 0.4, tz);
     this.group.add(top, leg);
     this.addSpot('table', 'Trinket table', ['ring', 'amulet'], new THREE.Vector3(tx, fy, tz), new THREE.Vector3(tx, fy + 1.05, tz));
+
+    // Training book on a lectern by the left wall: respec attributes and skills for gold.
+    this.bookPos = new THREE.Vector3(x0 + 1.0, fy, c.z + 0.5);
+    const lectern = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.0, 0.5), beam);
+    lectern.position.set(this.bookPos.x, fy + 0.5, this.bookPos.z);
+    const book = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.1, 0.4), toonMaterial(0x4a6fb0, { emissive: 0x2a4a90, emissiveIntensity: 0.4 }));
+    book.position.set(this.bookPos.x, fy + 1.05, this.bookPos.z);
+    book.rotation.z = 0.25;
+    addOutline(book, 0.03);
+    this.group.add(lectern, book);
   }
 
   private addSpot(kind: Spot['kind'], name: string, accepts: Slot[], pos: THREE.Vector3, at: THREE.Vector3): void {
@@ -164,6 +176,13 @@ export class Home {
       label: 'Open storage chest',
       color: '#ffd27a',
       act: () => this.ui.openChest(this.chest),
+    });
+    out.push({
+      pos: this.bookPos,
+      radius: 1.6,
+      label: 'Training book (skills and respec)',
+      color: '#8ab4ff',
+      act: () => this.onBook(),
     });
     for (const s of this.spots) {
       out.push({

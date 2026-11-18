@@ -45,6 +45,10 @@ export class Enemy {
   private chargeDir = new THREE.Vector3();
   /** Seeded so tests are repeatable. */
   private rand = mulberry32(this.id * 7919);
+  /** Status effects from skills. */
+  slowTime = 0;
+  slowFactor = 1;
+  tauntTime = 0;
   /** Set on death; cleared once the loot has been dropped. */
   lootPending = false;
   /** Seconds of burning left (Emberfang). */
@@ -84,6 +88,8 @@ export class Enemy {
     this.cooldown = 0;
     this.sinceHit = 99;
     this.burnTime = 0;
+    this.slowTime = 0;
+    this.tauntTime = 0;
     this.setState('idle');
     this.lootPending = false;
   }
@@ -131,12 +137,18 @@ export class Enemy {
   update(dt: number, player: Player): void {
     this.stateTime += dt;
     this.sinceHit += dt;
-    this.cooldown -= dt;
     this.poise.update(dt);
+    this.slowTime = Math.max(0, this.slowTime - dt);
+    this.tauntTime = Math.max(0, this.tauntTime - dt);
+    // Slowed enemies also recover their attacks more slowly.
+    this.cooldown -= dt * this.speedMult();
     const s = this.stats;
     const toPlayer = player.pos.clone().sub(this.pos).setY(0);
     const dist = toPlayer.length();
-    const playerReachable = player.state !== 'dead' && Math.abs(player.pos.y - this.pos.y) < 6;
+    // A stealthed player can't be seen unless right next to them; a taunt overrides everything.
+    const hidden = player.stealthTime > 0 && dist > 1.5;
+    const playerReachable =
+      player.state !== 'dead' && !hidden && (this.tauntTime > 0 || Math.abs(player.pos.y - this.pos.y) < 6);
     const fromHome = Math.hypot(this.pos.x - this.home.x, this.pos.z - this.home.z);
 
     switch (this.state) {
@@ -150,11 +162,11 @@ export class Enemy {
         }
         const d = this.wander.clone().sub(this.pos).setY(0);
         this.steer(d.length() > 0.3 ? d : null, s.speed * 0.35, dt, 4);
-        if (playerReachable && dist < s.aggro) this.setState('chase');
+        if (playerReachable && (dist < s.aggro || this.tauntTime > 0)) this.setState('chase');
         break;
       }
       case 'chase': {
-        if (!playerReachable || fromHome > s.leash) {
+        if (!playerReachable || (fromHome > s.leash && this.tauntTime <= 0)) {
           this.setState('return');
           break;
         }
@@ -219,7 +231,7 @@ export class Enemy {
           this.hp = s.hp;
           this.poise.reset();
           this.setState('idle');
-        } else if (playerReachable && dist < s.aggro * 0.5 && fromHome < s.leash * 0.8) {
+        } else if (playerReachable && ((dist < s.aggro * 0.5 && fromHome < s.leash * 0.8) || this.tauntTime > 0)) {
           this.setState('chase');
         }
         break;
@@ -244,7 +256,7 @@ export class Enemy {
         this.vel.x *= Math.exp(-3 * dt);
         this.vel.z *= Math.exp(-3 * dt);
       } else {
-        this.vel.copy(this.chargeDir).multiplyScalar(s.lunge);
+        this.vel.copy(this.chargeDir).multiplyScalar(s.lunge * this.speedMult());
       }
       const blocked = this.move(dt);
       if (!this.hitDone && dist < touch) {
@@ -308,6 +320,28 @@ export class Enemy {
     return 'hit';
   }
 
+  speedMult(): number {
+    return this.slowTime > 0 ? this.slowFactor : 1;
+  }
+
+  slow(factor: number, time: number): void {
+    this.slowFactor = factor;
+    this.slowTime = Math.max(this.slowTime, time);
+  }
+
+  /** Frozen solid / stunned for `time` seconds (frost nova, shield bash). */
+  freeze(time: number, kind: StaggerKind = 'dazed'): void {
+    if (!this.alive) return;
+    this.vel.set(0, 0, 0);
+    this.stagger({ kind, time });
+  }
+
+  taunt(time: number): void {
+    if (!this.alive) return;
+    this.tauntTime = time;
+    if (this.state === 'idle' || this.state === 'return') this.setState('chase');
+  }
+
   private stagger(st: { kind: StaggerKind; time: number }): void {
     this.staggerKind = st.kind;
     this.staggerTime = st.time;
@@ -333,7 +367,7 @@ export class Enemy {
 
   /** Accelerate toward `dir` at `speed` (null = stop) and move; turns to face the motion. */
   private steer(dir: THREE.Vector3 | null, speed: number, dt: number, turnRate: number): void {
-    const target = dir && dir.lengthSq() > 1e-6 ? dir.clone().normalize().multiplyScalar(speed) : new THREE.Vector3();
+    const target = dir && dir.lengthSq() > 1e-6 ? dir.clone().normalize().multiplyScalar(speed * this.speedMult()) : new THREE.Vector3();
     const k = 1 - Math.exp(-8 * dt);
     this.vel.x += (target.x - this.vel.x) * k;
     this.vel.z += (target.z - this.vel.z) * k;

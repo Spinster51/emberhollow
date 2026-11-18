@@ -2,7 +2,7 @@ import {
   BASE_BY_ID, MATERIALS, RARITY_INFO, SLOTS, SLOT_NAMES, STAT_LABEL, UNIQUE_BY_ID, emptyStats, itemStats, lookOf, slotOf,
   type Item, type Slot, type StatKey,
 } from '../items/items';
-import type { Inventory } from '../items/Inventory';
+import type { Derived, Inventory } from '../items/Inventory';
 
 /** A display spot in the home base (weapon mount or armour stand). */
 export interface DisplaySpot {
@@ -36,6 +36,7 @@ export class InventoryUI {
     root: HTMLElement,
     private inv: Inventory,
     private level: () => number,
+    private stats: () => Derived,
     private onOpenChange: (open: boolean) => void,
     private onDrop: (item: Item) => void,
     private toast: (msg: string) => void,
@@ -186,11 +187,12 @@ export class InventoryUI {
   }
 
   private statsBox(): HTMLElement {
-    const d = this.inv.derive();
+    const d = this.stats();
     const rows: [string, string][] = [
       ['Damage', `${Math.round(d.weaponDamage * d.damageMult)}${d.fireDamage ? ` +${d.fireDamage} fire` : ''}`],
+      ['HP / Mana', `${d.maxHp} / ${d.maxMana}`],
       ['Armour', `${d.armour} (−${Math.round(d.armourReduction * 100)}% damage)`],
-      ['HP / Stamina', `${d.maxHp} / ${d.maxStamina}`],
+      ['Stamina', `${d.maxStamina}`],
       ['Crit', `${Math.round(d.crit * 100)}%`],
       ['Attack speed', `${Math.round(d.attackSpeed * 100)}%`],
       ['Move speed', `${Math.round(d.moveSpeed * 100)}%`],

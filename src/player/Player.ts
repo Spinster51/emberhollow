@@ -6,10 +6,12 @@ import { Poise, type CombatFx, type Hit, type HitResult } from '../combat/combat
 import type { StaggerKind } from '../config';
 import { Inventory, type Derived } from '../items/Inventory';
 import { mulberry32 } from '../core/noise';
+import { Progression } from '../classes/Progression';
+import type { ClassId, ComboStep, SkillDef } from '../classes/classes';
 
 export type MoveState =
   | 'ground' | 'air' | 'roll' | 'climb' | 'climbJump' | 'mantle' | 'glide'
-  | 'attack' | 'stagger' | 'dead';
+  | 'attack' | 'skill' | 'stagger' | 'dead';
 
 /** A sword strike that reached its hit point this step; the game resolves it against enemies. */
 export interface Strike {
@@ -22,6 +24,16 @@ export interface Strike {
   fire: number;
   /** Sets the target alight (Emberfang). */
   burn: boolean;
+  /** Mage bolt: the game launches a projectile instead of a melee arc. */
+  projectile?: boolean;
+  reach?: number;
+  arc?: number;
+}
+
+/** Result of rolling one hit's damage. */
+export interface HitRoll {
+  damage: number;
+  crit: boolean;
 }
 
 const C = TUNING.combat;
@@ -41,9 +53,10 @@ export class Player {
   stateTime = 0;
 
   readonly inv = new Inventory();
-  /** Stats from gear; refresh with `refreshStats()` after equipment changes. */
-  stats: Derived = this.inv.derive();
-  private statsVersion = this.inv.version;
+  readonly prog = new Progression();
+  /** Stats from class, level, attributes, tree and gear; see `refreshStats()`. */
+  stats: Derived = this.inv.derive(this.prog);
+  private statsKey = '';
   /** Seeded so crits are repeatable in tests. */
   rand = mulberry32(1234);
 
@@ -52,8 +65,40 @@ export class Player {
   private sinceStaminaUse = 0;
 
   hp = T.maxHp;
-  /** Character level (levelling arrives with classes in M4). Gear needs a minimum level. */
-  level = 1;
+  mana = 50;
+
+  // Buffs and class mechanics
+  /** War Cry: seconds of +damage left. */
+  damageBuffTime = 0;
+  damageBuff = 0.25;
+  /** Bulwark: seconds of damage reduction left (no staggers). */
+  guardTime = 0;
+  /** Vanish: seconds of stealth left. */
+  stealthTime = 0;
+  /** Shadowstep: next hit is a guaranteed crit. */
+  nextCrit = false;
+  /** Tank counter meter, 0–100: blocks and parries fill it. */
+  counter = 0;
+  /** Seconds since the last parry (Riposte window). */
+  sinceParry = 99;
+  /** Mage: right click held = aiming (slow walk, face the crosshair). */
+  aiming = false;
+  /** Where ranged attacks go (set by the game every step: lock target or crosshair). */
+  readonly aimPoint = new THREE.Vector3();
+  // Skill state
+  skill: SkillDef | null = null;
+  /** Untouchable while the current skill runs (blink). */
+  skillInvulnerable = false;
+  /** Velocity drag during skills; 0 = keep the velocity the skill set. */
+  skillDrag = 12;
+
+  get level(): number {
+    return this.prog.level;
+  }
+
+  get cls(): ClassId {
+    return this.prog.cls;
+  }
   gliderUnlocked = true; // test map: unlocked from the start
   sprinting = false;
   invulnerable = false;
@@ -98,12 +143,26 @@ export class Player {
     this.respawn();
   }
 
+  /** Start a fresh character of the given class. */
+  setClass(cls: ClassId): void {
+    this.prog.reset(cls);
+    this.inv.resetFor(cls);
+    this.respawn();
+  }
+
   respawn(): void {
     this.pos.copy(this.world.spawn);
     this.vel.set(0, 0, 0);
     this.refreshStats();
     this.hp = this.stats.maxHp;
     this.stamina = this.stats.maxStamina;
+    this.mana = this.stats.maxMana;
+    this.damageBuffTime = this.guardTime = this.stealthTime = 0;
+    this.nextCrit = false;
+    this.counter = 0;
+    this.sinceParry = 99;
+    this.aiming = false;
+    this.skill = null;
     this.exhausted = false;
     this.poise.reset();
     this.blocking = false;
@@ -153,6 +212,12 @@ export class Player {
     this.poise.update(dt);
     this.refreshStats();
     if (this.stats.uniques.has('regen')) this.heal(C.regen * dt);
+    if (this.stats.hpRegen > 0) this.heal(this.stats.hpRegen * dt);
+    if (this.state !== 'dead') this.mana = Math.min(this.stats.maxMana, this.mana + this.stats.manaRegen * dt);
+    this.damageBuffTime = Math.max(0, this.damageBuffTime - dt);
+    this.guardTime = Math.max(0, this.guardTime - dt);
+    this.stealthTime = Math.max(0, this.stealthTime - dt);
+    this.sinceParry += dt;
     this.aim = aim;
     this.camYaw = camYaw;
 
@@ -192,6 +257,9 @@ export class Player {
       case 'attack':
         this.updateAttack(dt, input, wish);
         break;
+      case 'skill':
+        this.updateSkill(dt);
+        break;
       case 'stagger':
         this.updateStagger(dt);
         break;
@@ -202,23 +270,25 @@ export class Player {
     if (this.state !== 'ground') {
       this.blocking = false;
       this.blockTime = 0;
+      if (this.state !== 'attack') this.aiming = false;
     }
 
     this.world.clampToWorld(this.pos);
     this.regenStamina(dt);
     this.invulnerable =
-      this.state === 'dead' || (this.state === 'roll' && this.stateTime < T.roll.buildup + T.roll.move);
+      this.state === 'dead' ||
+      (this.state === 'skill' && this.skillInvulnerable) ||
+      (this.state === 'roll' && this.stateTime < T.roll.buildup + T.roll.move);
   }
 
   private aim: THREE.Vector3 | null = null;
-  private strikeCrit = false;
   private camYaw = 0;
 
   private regenStamina(dt: number): void {
     const draining =
       this.state === 'climb' || this.state === 'glide' || this.state === 'climbJump' || this.sprinting;
     if (draining || this.sinceStaminaUse < T.stamina.regenDelay) return;
-    if (!['ground', 'roll', 'mantle', 'attack', 'stagger'].includes(this.state)) return;
+    if (!['ground', 'roll', 'mantle', 'attack', 'skill', 'stagger'].includes(this.state)) return;
     this.stamina = Math.min(this.stats.maxStamina, this.stamina + T.stamina.regen * dt);
     if (this.exhausted && this.stamina >= this.stats.maxStamina * T.stamina.recoverFraction) {
       this.exhausted = false;
@@ -246,18 +316,23 @@ export class Player {
       return;
     }
 
-    this.blocking = input.isHeld('block');
+    // Right click: block (melee classes) or aim (mage).
+    const secondary = input.isHeld('block');
+    const mage = this.prog.def.secondary === 'aim';
+    this.blocking = secondary && !mage;
+    this.aiming = secondary && mage;
     this.blockTime = this.blocking ? this.blockTime + dt : 0;
-    this.sprinting = moving && !this.blocking && input.isHeld('dodge') && this.canUseStamina();
+    this.sprinting = moving && !secondary && input.isHeld('dodge') && this.canUseStamina();
     if (this.sprinting) this.spend(T.stamina.sprint * dt);
 
     let speed = (this.sprinting ? T.sprintSpeed : T.walkSpeed) * this.stats.moveSpeed;
     if (this.blocking) speed *= C.block.moveFactor;
+    if (this.aiming) speed *= 0.6;
     const target = wish.clone().multiplyScalar(speed);
     this.accelerate(target, T.groundAccel, dt);
-    // Locked on (and not sprinting) or blocking: keep facing the target / camera and strafe.
+    // Locked on (and not sprinting), blocking or aiming: keep facing the target / camera and strafe.
     if (this.aim && !this.sprinting) this.turnTowards(this.aim.clone().sub(this.pos), 12, dt);
-    else if (this.blocking) this.turnTowards(this.cameraForward(), 12, dt);
+    else if (this.blocking || this.aiming) this.turnTowards(this.cameraForward(), 12, dt);
     else if (moving) this.turnTowards(wish, 12, dt);
 
     const wall = this.moveHorizontal(dt, true);
@@ -412,18 +487,24 @@ export class Player {
     return new THREE.Vector3(-Math.sin(this.camYaw), 0, -Math.cos(this.camYaw));
   }
 
+  /** The class's primary-attack combo. */
+  combo(): ComboStep[] {
+    return this.prog.def.combo;
+  }
+
   private startAttack(index: number): void {
-    const a = C.combo[index];
+    const a = this.combo()[index];
     if (!this.spend(a.stamina)) return;
-    this.strikeCrit = this.rand() < this.stats.crit;
     this.attackBuffer = 0;
     this.comboIndex = index;
     this.chainQueued = false;
     this.strikeDone = false;
     this.sprinting = false;
     this.blocking = false;
-    // Face the lock-on target, or where the camera looks.
-    const dir = this.aim ? this.aim.clone().sub(this.pos).setY(0) : this.cameraForward();
+    // Face the lock-on target, the crosshair (ranged) or where the camera looks.
+    const dir = this.aim
+      ? this.aim.clone().sub(this.pos).setY(0)
+      : a.projectile ? this.aimPoint.clone().sub(this.pos).setY(0) : this.cameraForward();
     if (dir.lengthSq() > 1e-4) this.facing = Math.atan2(-dir.x, -dir.z);
     this.setState('attack');
   }
@@ -451,6 +532,7 @@ export class Player {
     }
 
     if (phase === 'windup' && this.aim) this.turnTowards(this.aim.clone().sub(this.pos), 20, dt);
+    else if (phase === 'windup' && a.projectile) this.turnTowards(this.aimPoint.clone().sub(this.pos), 20, dt);
 
     // Pressing attack during the swing (or just before it, via the buffer) chains the combo.
     if (phase !== 'recover' && this.attackBuffer > 0 && t >= a.windup) {
@@ -469,21 +551,23 @@ export class Player {
 
     if (!this.strikeDone && t >= a.windup + a.swing * a.hitAt) {
       this.strikeDone = true;
-      const st = this.stats;
-      const damage = st.weaponDamage * a.mult * st.damageMult * (this.strikeCrit ? st.critMult : 1);
+      const roll = this.rollHit(a.mult);
       this.strike = {
         index: this.comboIndex,
-        damage: Math.round(damage),
+        damage: roll.damage,
         poise: a.poise,
         knockback: a.knockback,
-        crit: this.strikeCrit,
-        fire: st.fireDamage,
-        burn: st.uniques.has('burn'),
+        crit: roll.crit,
+        fire: this.stats.fireDamage,
+        burn: this.stats.uniques.has('burn'),
+        projectile: a.projectile,
+        reach: a.reach,
+        arc: a.arc,
       };
     }
 
     if (t >= a.windup + a.swing && this.chainQueued) {
-      if (this.comboIndex < C.combo.length - 1 && this.canUseStamina(1)) {
+      if (this.comboIndex < this.combo().length - 1 && this.canUseStamina(1)) {
         this.startAttack(this.comboIndex + 1);
         if (this.state === 'attack') return;
       }
@@ -517,6 +601,73 @@ export class Player {
     }
   }
 
+  /**
+   * Roll one hit's damage: weapon × `mult` × damage bonuses (attributes, War Cry), crit
+   * (Shadowstep makes it certain) and the stealth opener bonus (+100%, ends stealth).
+   */
+  rollHit(mult: number): HitRoll {
+    const st = this.stats;
+    const crit = this.nextCrit || this.rand() < st.crit;
+    this.nextCrit = false;
+    let dmg = st.weaponDamage * mult * st.damageMult * (crit ? st.critMult : 1);
+    if (this.damageBuffTime > 0) dmg *= 1 + this.damageBuff;
+    if (this.stealthTime > 0) {
+      dmg *= 2;
+      this.stealthTime = 0;
+    }
+    return { damage: Math.round(dmg), crit };
+  }
+
+  spendMana(n: number): boolean {
+    if (this.mana < n) return false;
+    this.mana -= n;
+    return true;
+  }
+
+  /** Enter the skill state (the SkillSystem drives what happens). */
+  startSkill(def: SkillDef, invulnerable = false, drag = 12): void {
+    this.skill = def;
+    this.skillInvulnerable = invulnerable;
+    this.skillDrag = drag;
+    this.sprinting = false;
+    this.blocking = false;
+    this.setState('skill');
+  }
+
+  /** Can a skill start now? (on the ground, idle, attacking or blocking) */
+  canAct(): boolean {
+    return this.state === 'ground' || (this.state === 'attack' && this.attackPhase() !== 'swing');
+  }
+
+  private updateSkill(dt: number): void {
+    if (this.skillDrag > 0) {
+      const k = Math.exp(-this.skillDrag * dt);
+      this.vel.x *= k;
+      this.vel.z *= k;
+    }
+    this.moveHorizontal(dt, true);
+    if (this.stickToGround()) return;
+    if (this.skill && this.stateTime >= this.skill.time) {
+      this.skill = null;
+      this.setState('ground');
+    }
+  }
+
+  /** Teleport (blink / shadowstep): keeps out of walls and onto the ground. */
+  teleport(to: THREE.Vector3): void {
+    this.pos.x = to.x;
+    this.pos.z = to.z;
+    this.world.clampToWorld(this.pos);
+    this.pos.y = this.world.groundAt(this.pos.x, this.pos.z, Math.max(this.pos.y, to.y) + 2);
+    this.world.resolveBoxes(this.pos, T.radius, T.height);
+  }
+
+  /** Face a point. */
+  faceTowards(p: THREE.Vector3): void {
+    const d = p.clone().sub(this.pos);
+    if (d.x * d.x + d.z * d.z > 1e-6) this.facing = Math.atan2(-d.x, -d.z);
+  }
+
   /** Apply an enemy hit: rolls dodge it, blocks reduce it, an early block parries it. */
   takeHit(hit: Hit): HitResult {
     if (this.state === 'dead') return 'ignored';
@@ -534,18 +685,24 @@ export class Player {
     let result: HitResult = 'hit';
     const facesAttacker = this.facingVector().dot(away) <= -Math.cos(((C.block.arc / 2) * Math.PI) / 180);
     if (this.blocking && facesAttacker) {
+      const tank = this.cls === 'tank';
       if (this.blockTime <= C.block.parryWindow) {
         this.fx.push({ pos: fxPos, amount: 0, target: 'player', result: 'parried', stagger: null });
+        this.sinceParry = 0;
+        if (tank) this.counter = Math.min(100, this.counter + 35);
         return 'parried';
       }
       damage *= 1 - this.stats.blockStrength;
       poise *= 1 - this.stats.blockStrength;
+      if (tank) this.counter = Math.min(100, this.counter + 10);
       result = 'blocked';
     }
     if (this.state === 'stagger') damage *= C.staggeredDamageBonus;
+    if (this.guardTime > 0) damage *= 0.5;
     damage = Math.round(damage * (1 - this.stats.armourReduction));
     this.hp -= damage;
-    const stagger = this.poise.apply(poise);
+    this.stealthTime = 0;
+    const stagger = this.guardTime > 0 ? null : this.poise.apply(poise);
     this.fx.push({ pos: fxPos, amount: damage, target: 'player', result, stagger: stagger?.kind ?? null });
 
     if (this.hp <= 0) {
@@ -558,7 +715,8 @@ export class Player {
       this.staggerKind = stagger.kind;
       this.staggerTime = stagger.time;
       this.vel.set(away.x * push, 0, away.z * push);
-      if (this.state === 'ground' || this.state === 'attack' || this.state === 'stagger' || this.state === 'roll') {
+      if (['ground', 'attack', 'skill', 'stagger', 'roll'].includes(this.state)) {
+        this.skill = null;
         this.setState('stagger');
       } else {
         this.setState('air');
@@ -571,23 +729,38 @@ export class Player {
   }
 
   /** Combo step timings, shortened by attack speed. */
-  attackTimes(): (typeof C.combo)[number] {
-    const a = C.combo[this.comboIndex];
+  attackTimes(): ComboStep {
+    const a = this.combo()[Math.min(this.comboIndex, this.combo().length - 1)];
     const k = 1 / this.stats.attackSpeed;
     return { ...a, windup: a.windup * k, swing: a.swing * k, recover: a.recover * k };
   }
 
   private rollCost(extra: number): number {
-    return this.stats.uniques.has('freeRoll') ? 0 : T.stamina.roll + extra;
+    return this.stats.uniques.has('freeRoll') ? 0 : Math.max(1, T.stamina.roll + extra - this.stats.rollDiscount);
   }
 
   /** Recompute stats from gear if the equipment changed. Keeps HP/stamina within the new maximums. */
   refreshStats(): void {
-    if (this.statsVersion === this.inv.version) return;
-    this.statsVersion = this.inv.version;
-    this.stats = this.inv.derive();
+    const key = `${this.inv.version}:${this.prog.version}`;
+    if (this.statsKey === key) return;
+    this.statsKey = key;
+    this.stats = this.inv.derive(this.prog);
+    this.inv.cls = this.prog.cls;
     this.hp = Math.min(this.hp, this.stats.maxHp);
     this.stamina = Math.min(this.stamina, this.stats.maxStamina);
+    this.mana = Math.min(this.mana, this.stats.maxMana);
+  }
+
+  /** Gain XP; on level-up, heal fully and announce it. */
+  gainXp(n: number): number {
+    const levels = this.prog.addXp(n);
+    if (levels > 0) {
+      this.refreshStats();
+      this.hp = this.stats.maxHp;
+      this.mana = this.stats.maxMana;
+      this.events.push(`Level ${this.level}! +${levels * 5} attribute points, +${levels} skill point${levels > 1 ? 's' : ''} (K)`);
+    }
+    return levels;
   }
 
   heal(amount: number): void {
