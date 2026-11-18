@@ -3,6 +3,7 @@ import {
   type Item, type Slot, type StatKey,
 } from '../items/items';
 import type { Derived, Inventory } from '../items/Inventory';
+import { CRAFT_MATERIAL, missing, reroll, rerollCost, salvage, salvageAmount, upgrade, upgradeCost, type Cost } from '../items/crafting';
 
 /** A display spot in the home base (weapon mount or armour stand). */
 export interface DisplaySpot {
@@ -13,7 +14,11 @@ export interface DisplaySpot {
   onChange(): void;
 }
 
-type Mode = { kind: 'bag' } | { kind: 'chest'; chest: (Item | null)[] } | { kind: 'rack'; spot: DisplaySpot };
+type Mode =
+  | { kind: 'bag' }
+  | { kind: 'chest'; chest: (Item | null)[] }
+  | { kind: 'rack'; spot: DisplaySpot }
+  | { kind: 'craft' };
 
 const SHORT: Record<string, string> = {
   sword: 'SWD', greatsword: 'GSW', woodShield: 'SHD', ironShield: 'SHD', cap: 'CAP', helm: 'HLM', tunic: 'TUN',
@@ -31,6 +36,8 @@ export class InventoryUI {
   private mode: Mode | null = null;
   private renderedVersion = -1;
   private chestVersion = 0;
+  /** Workbench: the item the player picked (bag or equipped). */
+  private selected: Item | null = null;
 
   constructor(
     root: HTMLElement,
@@ -88,6 +95,11 @@ export class InventoryUI {
     this.open({ kind: 'rack', spot });
   }
 
+  openCraft(): void {
+    this.selected = null;
+    this.open({ kind: 'craft' });
+  }
+
   close(): void {
     this.mode = null;
     this.panel.style.display = 'none';
@@ -138,6 +150,48 @@ export class InventoryUI {
     return true;
   }
 
+  /** Workbench: pick an item (bag or equipped) to work on. */
+  select(it: Item | null): void {
+    this.selected = it;
+    this.render();
+  }
+
+  get selection(): Item | null {
+    return this.selected;
+  }
+
+  /** Workbench: salvage bag item `i` into its slot material. */
+  salvageAt(i: number): boolean {
+    const r = salvage(this.inv, i);
+    if (r.error) return this.fail(r.error);
+    if (this.selected && !this.inv.bag.includes(this.selected) && !Object.values(this.inv.equipped).includes(this.selected)) this.selected = null;
+    this.toast(`Salvaged into ${r.gained}.`);
+    return true;
+  }
+
+  /** Workbench: upgrade the selected item by one level. */
+  upgradeSelected(): boolean {
+    if (!this.selected) return this.fail('Select an item first.');
+    const err = upgrade(this.inv, this.selected);
+    if (err) return this.fail(err);
+    this.toast(`${this.selected.name} upgraded.`);
+    return true;
+  }
+
+  /** Workbench: re-roll one affix on the selected item. */
+  rerollSelected(rand: () => number = Math.random): boolean {
+    if (!this.selected) return this.fail('Select an item first.');
+    const err = reroll(this.inv, this.selected, rand);
+    if (err) return this.fail(err);
+    this.toast(`Re-rolled: ${this.selected.name}.`);
+    return true;
+  }
+
+  private fail(msg: string): false {
+    this.toast(msg);
+    return false;
+  }
+
   // ---------------------------------------------------------------- rendering
 
   private render(): void {
@@ -146,15 +200,16 @@ export class InventoryUI {
     this.renderedVersion = this.inv.version + this.chestVersion;
     this.panel.innerHTML = '';
     this.tip.style.display = 'none';
-    const title = m.kind === 'bag' ? 'Inventory' : m.kind === 'chest' ? 'Storage chest' : m.spot.name;
+    const title = { bag: 'Inventory', chest: 'Storage chest', rack: m.kind === 'rack' ? m.spot.name : '', craft: 'Workbench' }[m.kind];
     const head = el('div', 'inv-head', `${title}<span class="inv-close">✕ (Esc)</span>`);
     head.querySelector('.inv-close')!.addEventListener('click', () => this.close());
     this.panel.append(head);
     const body = el('div', 'inv-body');
     this.panel.append(body);
 
-    if (m.kind === 'bag') body.append(this.equipmentColumn());
+    if (m.kind === 'bag' || m.kind === 'craft') body.append(this.equipmentColumn(m.kind));
     if (m.kind === 'rack') body.append(this.rackColumn(m.spot));
+    if (m.kind === 'craft') body.append(this.craftColumn());
     body.append(this.bagColumn(m));
     if (m.kind === 'chest') body.append(this.chestColumn(m.chest));
 
@@ -166,19 +221,22 @@ export class InventoryUI {
       bag: 'Click: equip / unequip · Right-click: drop',
       chest: 'Click an item to move it between bag and chest',
       rack: 'Click a highlighted bag item to display it',
+      craft: 'Click an item to select it, then salvage, upgrade or re-roll it',
     }[m.kind];
     this.panel.append(el('div', 'inv-foot', `<span class="gold">Gold ${this.inv.gold}</span> ${mats ? '· ' + mats : ''}<br><i>${hint}</i>`));
   }
 
-  private equipmentColumn(): HTMLElement {
+  private equipmentColumn(kind: 'bag' | 'craft'): HTMLElement {
     const col = el('div', 'inv-col');
     col.append(el('div', 'inv-sub', 'Equipped'));
     const grid = el('div', 'inv-grid equip');
     for (const slot of SLOTS) {
       const it = this.inv.equipped[slot];
       const cell = this.cell(it, SLOT_NAMES[slot]);
+      if (it && it === this.selected) cell.classList.add('sel');
       cell.addEventListener('click', () => {
-        if (it && !this.inv.unequip(slot)) this.toast('Your bag is full.');
+        if (kind === 'craft') this.select(it);
+        else if (it && !this.inv.unequip(slot)) this.toast('Your bag is full.');
       });
       grid.append(cell);
     }
@@ -208,9 +266,12 @@ export class InventoryUI {
     this.inv.bag.forEach((it, i) => {
       const usable = m.kind !== 'rack' || (it && m.spot.accepts.includes(slotOf(it)));
       const cell = this.cell(it, '', !usable);
+      if (it && it === this.selected) cell.classList.add('sel');
       cell.addEventListener('click', () => {
         if (!it) return;
-        if (m.kind === 'bag') {
+        if (m.kind === 'craft') {
+          this.select(it);
+        } else if (m.kind === 'bag') {
           const err = this.inv.equip(i, this.level());
           if (err) this.toast(err);
         } else if (m.kind === 'chest') {
@@ -244,6 +305,59 @@ export class InventoryUI {
     });
     col.append(grid);
     return col;
+  }
+
+  private craftColumn(): HTMLElement {
+    const col = el('div', 'inv-col craft');
+    col.append(el('div', 'inv-sub', 'Workbench'));
+    const it = this.selected;
+    if (!it) {
+      col.append(el('div', 'inv-note', 'Select an item from your bag or equipped gear.'));
+      return col;
+    }
+    const color = RARITY_INFO[it.rarity].color;
+    col.append(el('div', 'craft-name', `<span style="color:${color}">${it.name}</span>`));
+    col.append(el('div', 'craft-tip', tooltipHtml(it, this.inv.equipped[slotOf(it)], this.level())));
+
+    const inBag = this.inv.bag.includes(it);
+    const salBtn = this.craftButton(
+      `Salvage: ${salvageAmount(it)} ${MATERIALS[CRAFT_MATERIAL[slotOf(it)]].name}`,
+      !inBag,
+      () => this.salvageAt(this.inv.bag.indexOf(it)),
+      inBag ? '' : 'Put it in your bag to salvage it.',
+    );
+
+    const up = upgradeCost(it);
+    const upWhy = up ? missing(this.inv, up) : 'Already at +10.';
+    const upBtn = this.craftButton(
+      up ? `Upgrade to +${(it.plus ?? 0) + 1}: ${costText(up)}` : 'Upgrade: maxed',
+      !!upWhy,
+      () => this.upgradeSelected(),
+      upWhy ?? '',
+    );
+
+    const rc: Cost = rerollCost(it);
+    const rrWhy = it.affixes.length === 0 ? 'No affixes to re-roll.' : missing(this.inv, rc);
+    const rrBtn = this.craftButton(
+      `Re-roll one affix: ${costText(rc)}`,
+      !!rrWhy,
+      () => this.rerollSelected(),
+      rrWhy ?? '',
+    );
+    col.append(salBtn, upBtn, rrBtn);
+    return col;
+  }
+
+  private craftButton(label: string, disabled: boolean, act: () => void, why: string): HTMLElement {
+    const wrap = el('div', 'craft-row');
+    const b = document.createElement('button');
+    b.className = 'craft-btn';
+    b.textContent = label;
+    b.disabled = disabled;
+    b.addEventListener('click', act);
+    wrap.append(b);
+    if (why) wrap.append(el('div', 'inv-note', why));
+    return wrap;
   }
 
   private rackColumn(spot: DisplaySpot): HTMLElement {
@@ -312,6 +426,15 @@ export function tooltipHtml(it: Item, equipped: Item | null, level: number): str
     lines.push('<div class="tip-up">↑ Empty slot</div>');
   }
   return lines.join('');
+}
+
+/** "120 gold + 2 Golem Core + 1 Warden Ember" */
+function costText(c: Cost): string {
+  const parts = [`${c.gold} gold`];
+  if (c.matAmount) parts.push(`${c.matAmount} ${MATERIALS[c.mat].name}`);
+  if (c.ember) parts.push(`${c.ember} Warden Ember`);
+  if (c.ash) parts.push(`${c.ash} ${MATERIALS.ash.name}`);
+  return parts.join(' + ');
 }
 
 function el(tag: string, cls: string, html = ''): HTMLDivElement {

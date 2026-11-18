@@ -2,6 +2,7 @@
 // All names are original. Numbers are first guesses for play-testing.
 
 import type { ClassId } from '../classes/classes';
+import { TUNING } from '../config';
 
 export type Slot = 'weapon' | 'offhand' | 'helmet' | 'chest' | 'gloves' | 'boots' | 'ring' | 'amulet';
 export const SLOTS: Slot[] = ['weapon', 'offhand', 'helmet', 'chest', 'gloves', 'boots', 'ring', 'amulet'];
@@ -177,6 +178,8 @@ export interface Item {
   req: number;
   affixes: Affix[];
   unique?: string;
+  /** Upgrade level from the workbench (+1..+10). Missing in old saves = 0. */
+  plus?: number;
   name: string;
 }
 
@@ -281,12 +284,35 @@ function rollAffixes(rand: () => number, slot: Slot, level: number, count: numbe
 export function itemStats(item: Item): Stats {
   const s = emptyStats();
   const base = BASE_BY_ID[item.base];
+  const up = 1 + TUNING.crafting.plusPerLevel * (item.plus ?? 0);
   for (const [k, v] of Object.entries(base.implicit) as [StatKey, number][]) {
-    // Penalties and block strength do not grow with level.
-    s[k] += v > 0 && k !== 'block' ? roundStat(k, scale(v, item.level)) : v;
+    // Penalties and block strength do not grow with level; upgrades only add to positive values.
+    if (v > 0 && k !== 'block') s[k] += roundStat(k, scale(v, item.level) * up);
+    else s[k] += v;
   }
-  for (const a of item.affixes) s[a.stat] += a.value;
+  for (const a of item.affixes) s[a.stat] += a.value > 0 ? roundStat(a.stat, a.value * up) : a.value;
   return s;
+}
+
+/** Recompute the display name (base name, affix prefix, unique name, and the +N upgrade suffix). */
+export function refreshName(item: Item): void {
+  const plain = item.unique ? UNIQUE_BY_ID[item.unique].name : nameFor(BASE_BY_ID[item.base], item.affixes);
+  item.name = (item.plus ?? 0) > 0 ? `${plain} +${item.plus}` : plain;
+}
+
+/** Replace one random affix (never a unique's, and never a stat the item already has). Returns false if nothing can change. */
+export function rerollAffix(item: Item, rand: () => number): boolean {
+  if (item.affixes.length === 0) return false;
+  const slot = BASE_BY_ID[item.base].slot;
+  const have = new Set(item.affixes.map((a) => a.stat));
+  const pool = AFFIXES.filter((a) => (!a.slots || a.slots.includes(slot)) && !have.has(a.stat));
+  if (pool.length === 0) return false;
+  const def = pool[Math.floor(rand() * pool.length)];
+  const i = Math.floor(rand() * item.affixes.length);
+  const v = scale(def.min + (def.max - def.min) * rand(), item.level);
+  item.affixes[i] = { stat: def.stat, value: roundStat(def.stat, v) };
+  refreshName(item);
+  return true;
 }
 
 export function slotOf(item: Item): Slot {

@@ -899,3 +899,16 @@ body {
   text-shadow: 2px 2px 0 #000;
   pointer-events: none;
 }
+
+/* Workbench (M7): crafting column beside the equipment and bag. */
+.inv-col.craft { width: 230px; }
+.inv-cell.sel { outline: 2px solid #ffb060; outline-offset: 2px; }
+.craft-name { font-weight: 600; margin: 4px 0 6px; }
+.craft-tip { font-size: 12px; line-height: 1.4; margin-bottom: 10px; }
+.craft-row { margin-bottom: 8px; }
+.craft-btn {
+  width: 100%; padding: 7px 8px; font: inherit; font-size: 13px; text-align: left;
+  color: #f4e9d2; background: #3a2c1e; border: 1px solid #8a6a3e; border-radius: 4px; cursor: pointer;
+}
+.craft-btn:hover:not(:disabled) { background: #4d3a26; }
+.craft-btn:disabled { opacity: 0.45; cursor: default; }

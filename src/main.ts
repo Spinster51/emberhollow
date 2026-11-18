@@ -14,8 +14,9 @@ else void game.adventure.boot();
 (window as unknown as { game: Game }).game = game;
 // Test helpers: item factories and tooltip rendering.
 if (new URLSearchParams(location.search).has('test')) {
-  void Promise.all([import('./items/items'), import('./ui/InventoryUI'), import('./save/Save')]).then(([items, ui, save]) => {
+  void Promise.all([import('./items/items'), import('./ui/InventoryUI'), import('./save/Save'), import('./items/crafting')]).then(([items, ui, save, crafting]) => {
     (window as unknown as { items: unknown }).items = { ...items, tooltipHtml: ui.tooltipHtml, validateAccount: save.validateAccount };
+    (window as unknown as { crafting: unknown }).crafting = crafting;
   });
 }
 

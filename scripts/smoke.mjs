@@ -621,6 +621,84 @@ check('items move between bag and chest', s.stored && s.back);
 check('weapon mount shows a weapon; refuses gauntlets', s.shown && s.wrongSlot === false && /Weapon mount/.test(s.mountLabel ?? ''), s.mountLabel);
 check('armour stand shows armour; items can be taken back', s.stand && s.taken);
 
+// ================================================================ crafting (milestone 7)
+const cr = await run(() => {
+  const g = window.game;
+  const p = g.player;
+  const h = g.home;
+  const inv = p.inv;
+  const C = window.crafting;
+  const I = window.items;
+  g.ui.close();
+  for (const k of Object.keys(inv.materials)) delete inv.materials[k];
+  inv.gold = 5000;
+  const out = {};
+  // Workbench: walk up to it and press E.
+  p.pos.set(h.benchPos.x + 1.0, h.floorY, h.benchPos.z);
+  g.step(1);
+  out.label = g.focus?.label;
+  window.press('interact');
+  out.mode = g.ui.modeKind;
+  g.ui.close();
+  // Salvage a rare weapon: 3 Golem Cores, the item is gone.
+  const gear = I.makeItem('ironSword', 'rare', 5, [{ stat: 'damagePct', value: 0.1 }]);
+  gear.affixes = [{ stat: 'damagePct', value: 0.1 }, { stat: 'str', value: 2 }];
+  inv.add(gear);
+  const sal = C.salvage(inv, inv.bag.indexOf(gear));
+  out.salvage = sal.gained === '3 Golem Core' && inv.materials.core === 3 && !inv.bag.includes(gear);
+  // Upgrade: +1 costs 10 gold and 1 core; the damage goes up.
+  const sword = I.makeItem('ironSword', 'rare', 5, [{ stat: 'damagePct', value: 0.1 }, { stat: 'str', value: 2 }]);
+  inv.add(sword);
+  const before = I.itemStats(sword).damage;
+  const goldBefore = inv.gold;
+  out.upErr = C.upgrade(inv, sword);
+  out.plus1 = sword.plus === 1 && sword.name.endsWith('+1') && goldBefore - inv.gold === 10 && inv.materials.core === 2;
+  out.more = I.itemStats(sword).damage > before;
+  // Missing material: +2 needs 1 core (ceil(2/2)) and 40 gold; drain the cores to show the message.
+  delete inv.materials.core;
+  out.missMat = C.upgrade(inv, sword) === 'Needs 1 Golem Core.' && sword.plus === 1;
+  inv.addMaterial('core', 5);
+  out.up2 = C.upgrade(inv, sword) === null && sword.plus === 2 && inv.materials.core === 4;
+  // Upgrades to +8 need a Warden Ember; +10 is the cap.
+  sword.plus = 7;
+  out.needEmber = C.upgrade(inv, sword) === 'Needs 1 Warden Ember.' && sword.plus === 7;
+  inv.addMaterial('ember', 3);
+  out.plus8 = C.upgrade(inv, sword) === null && sword.plus === 8 && inv.materials.ember === 2;
+  sword.plus = 10;
+  out.capped = C.upgradeCost(sword) === null && /maximum/.test(C.upgrade(inv, sword));
+  sword.plus = 0;
+  I.refreshName(sword);
+  // Re-roll one affix: costs 2 Cult Ash, changes an affix, keeps no duplicates.
+  const before2 = JSON.stringify(sword.affixes);
+  out.noAsh = /Cult Ash/.test(C.reroll(inv, sword, Math.random) ?? '');
+  inv.addMaterial('ash', 2);
+  let seed = 11;
+  const rng = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  out.reroll = C.reroll(inv, sword, rng) === null && inv.materials.ash === undefined && JSON.stringify(sword.affixes) !== before2;
+  const stats = sword.affixes.map((a) => a.stat);
+  out.noDupes = new Set(stats).size === stats.length && sword.affixes.length === 2;
+  // Old saves have no plus field: stats still work.
+  const old = { ...I.makeItem('rustySword') };
+  delete old.plus;
+  out.oldSave = I.itemStats(old).damage === I.itemStats(I.makeItem('rustySword')).damage;
+  // The UI: select, upgrade and re-roll through InventoryUI.
+  g.ui.openCraft();
+  g.ui.select(sword);
+  out.uiSelected = g.ui.selection === sword && g.ui.modeKind === 'craft';
+  inv.addMaterial('core', 1);
+  out.uiUp = g.ui.upgradeSelected() === true && sword.plus === 1;
+  g.ui.close();
+  return out;
+});
+check('workbench is an E prompt in the house, and it opens the craft panel', cr.label === 'Workbench (salvage, upgrade, re-roll)' && cr.mode === 'craft', `${cr.label} / ${cr.mode}`);
+check('salvage turns gear into its slot material', cr.salvage, JSON.stringify(cr));
+check('upgrade to +1 costs gold and material and raises stats', cr.plus1 && cr.more, cr.upErr ?? '');
+check('a missing material blocks the upgrade with a message', cr.missMat);
+check('upgrades to +2 succeed; +8 needs a Warden Ember; +10 is the cap', cr.up2 && cr.needEmber && cr.plus8 && cr.capped);
+check('re-roll costs Cult Ash, changes one affix and never duplicates a stat', cr.noAsh && cr.reroll && cr.noDupes);
+check('items saved before upgrades (no plus field) still work', cr.oldSave);
+check('the workbench panel selects and upgrades items', cr.uiSelected && cr.uiUp);
+
 // ================================================================ classes (milestone 4)
 await run(() => {
   // New character of a class at the spawn; one enemy `dist` m ahead (frozen unless asked).

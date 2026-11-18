@@ -37,6 +37,7 @@ export interface HomeHooks {
   book(): void;
   sleep(): void;
   furnish(): void;
+  bench(): void;
   message(text: string): void;
 }
 
@@ -62,6 +63,8 @@ export class Home {
   readonly bookPos: THREE.Vector3;
   readonly bedPos: THREE.Vector3;
   readonly cratePos: THREE.Vector3;
+  /** Workbench: salvage, upgrade and re-roll gear. */
+  readonly benchPos: THREE.Vector3;
   owned: boolean;
   expanded = false;
   /** Bought furniture not yet placed, by type. */
@@ -190,6 +193,18 @@ export class Home {
     crate.position.set(this.cratePos.x, fy + 0.3, this.cratePos.z);
     addOutline(crate, 0.03);
     this.group.add(crate);
+
+    // Workbench on the left wall: an anvil-style bench with a warm glow (salvage, upgrade, re-roll).
+    this.benchPos = new THREE.Vector3(c.x - 2.2, fy, z1 - 1.2);
+    const bench = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.9, 0.8), beam);
+    bench.position.set(this.benchPos.x, fy + 0.45, this.benchPos.z);
+    const anvil = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.3, 0.5), toonMaterial(0x5a5f6b, { emissive: 0xff6a20, emissiveIntensity: 0.25 }));
+    anvil.position.set(this.benchPos.x, fy + 1.05, this.benchPos.z);
+    for (const m of [bench, anvil]) {
+      m.castShadow = true;
+      addOutline(m, 0.03);
+    }
+    this.group.add(bench, anvil);
 
     // Back room: more mounts and stands (hidden behind its door until the expansion).
     this.group.add(this.backRoomGroup);
@@ -323,6 +338,7 @@ export class Home {
     out.push({ pos: this.bookPos, radius: 1.6, label: 'Training book (skills and respec)', color: '#8ab4ff', act: () => this.hooks.book() });
     out.push({ pos: this.bedPos, radius: 1.8, label: 'Sleep (heal, set respawn, save)', color: '#9fd8ff', act: () => this.hooks.sleep() });
     out.push({ pos: this.cratePos, radius: 1.5, label: 'Furniture crate (place furniture)', color: '#e0c08a', act: () => this.hooks.furnish() });
+    out.push({ pos: this.benchPos, radius: 1.6, label: 'Workbench (salvage, upgrade, re-roll)', color: '#ffb060', act: () => this.hooks.bench() });
     for (const s of this.spots) {
       if (s.backRoom && !this.expanded) continue;
       out.push({

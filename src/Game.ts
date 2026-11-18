@@ -140,6 +140,7 @@ export class Game {
       book: () => this.charUI.show(true),
       sleep: () => this.adventure.sleep(),
       furnish: () => this.adventure.furnish(),
+      bench: () => this.ui.openCraft(),
       message: (t) => this.player.events.push(t),
     });
     this.scene.add(this.home.group);

@@ -79,6 +79,18 @@ export const TUNING = {
     lockOn: { range: 25, flick: 40 },
   },
 
+  // Crafting at the home workbench (DESIGN §10). Salvage yields the slot's material; upgrades
+  // cost gold (goldBase × N²), slot materials (ceil(N/2)) and, from +8, Warden Embers.
+  crafting: {
+    maxPlus: 10,
+    /** Each +1 multiplies an item's positive stats by (1 + this × plus). */
+    plusPerLevel: 0.08,
+    salvageYield: { common: 1, uncommon: 2, rare: 3, epic: 5, legendary: 8 } as Record<string, number>,
+    goldBase: 10,
+    emberFrom: 8,
+    rerollAsh: 2,
+    rerollGoldPerLevel: 25,
+  },
   enemies: {
     respawnTime: 60,
     /** Camps respawn only when the player is at least this far away. */
