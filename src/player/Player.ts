@@ -366,7 +366,7 @@ export class Player {
         this.startMantle(wall, wall.top);
         return;
       }
-      if (this.pushTime > 0.12 && this.canUseStamina(1)) {
+      if (this.pushTime > 0.12 && this.canUseStamina(1) && !wall.box?.noClimb) {
         this.startClimb(wall);
         return;
       }
@@ -452,7 +452,7 @@ export class Player {
     this.pos.y += this.vel.y * dt;
 
     const wall = this.moveHorizontal(dt, false);
-    if (wall && this.wantsClimb(wall, wish)) {
+    if (wall && !wall.box?.noClimb && this.wantsClimb(wall, wish)) {
       this.startClimb(wall);
       return;
     }
@@ -822,7 +822,7 @@ export class Player {
     this.lowestVy = 0;
 
     const wall = this.moveHorizontal(dt, false);
-    if (wall && wall.top - this.pos.y > 0.3 && this.canUseStamina(1)) {
+    if (wall && !wall.box?.noClimb && wall.top - this.pos.y > 0.3 && this.canUseStamina(1)) {
       this.startClimb(wall);
       return;
     }

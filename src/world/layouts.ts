@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { fbm, smoothstep } from '../core/noise';
 import type { EnemyKind } from '../config';
 
-export type RegionId = 'town' | 'meadow' | 'forest' | 'ruins' | 'test';
+export type RegionId = 'town' | 'meadow' | 'forest' | 'ruins' | 'test' | 'dungeon';
 
 export interface Region {
   id: RegionId;

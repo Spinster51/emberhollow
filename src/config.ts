@@ -90,7 +90,7 @@ export const TUNING = {
   },
 };
 
-export type EnemyStyle = 'lunge' | 'charge' | 'melee' | 'ranged' | 'slam';
+export type EnemyStyle = 'lunge' | 'charge' | 'melee' | 'ranged' | 'slam' | 'boss';
 
 /** Per-kind enemy numbers at the kind's base level. Times in seconds, speeds m/s. */
 export interface EnemyStats {
@@ -127,6 +127,8 @@ export interface EnemyStats {
   poison?: boolean;
   /** Melee: 2-hit combo. */
   combo?: boolean;
+  /** Boss: phase 2 starts below this HP fraction. */
+  phase2?: number;
 }
 
 const enemy = (s: EnemyStats) => s;
@@ -177,6 +179,14 @@ export const ENEMY_STATS: Record<EnemyKind, EnemyStats> = {
     speed: 3.5, aggro: 22, leash: 32, range: 18, windup: 0.9, active: 0.1, recover: 0.7,
     damage: 24, poiseDamage: 20, knockback: 4, cooldown: 2.2, lunge: 0, keep: 12, projectile: 'orb', projectileSpeed: 13,
   }),
+  // The dungeon boss (DESIGN §7). Moves: sweep, slam, charge; phase 2 adds orb volleys, a fire
+  // nova and two skeleton adds, and everything gets faster. Wind-ups below are per move.
+  warden: enemy({
+    name: 'The Cinder Warden', style: 'boss', baseLevel: 16, hp: 2600, poise: 400, radius: 1.3, centreY: 2.3, topY: 4.6,
+    speed: 3.4, aggro: 24, leash: 60, range: 4.2, windup: 0.85, active: 0.25, recover: 0.9,
+    damage: 42, poiseDamage: 45, knockback: 8, cooldown: 1.3, lunge: 15, aoe: 5.5,
+    projectile: 'orb', projectileSpeed: 14, phase2: 0.5,
+  }),
 };
 
 /** Loot per kill: XP, gold range, chance of gear, the family's crafting material. */
@@ -190,7 +200,8 @@ export const ENEMY_LOOT: Record<EnemyKind, { xp: number; gold: [number, number];
   skeleton: { xp: 80, gold: [12, 26], gear: 0.4, material: 'bone', materialChance: 0.7 },
   golem: { xp: 160, gold: [30, 60], gear: 0.8, material: 'core', materialChance: 0.9 },
   cultist: { xp: 90, gold: [15, 30], gear: 0.5, material: 'ash', materialChance: 0.6 },
+  warden: { xp: 3000, gold: [400, 700], gear: 1, material: 'ember', materialChance: 1 },
 };
 
-export type EnemyKind = 'slime' | 'boar' | 'bandit' | 'wolf' | 'spider' | 'goblin' | 'skeleton' | 'golem' | 'cultist';
+export type EnemyKind = 'slime' | 'boar' | 'bandit' | 'wolf' | 'spider' | 'goblin' | 'skeleton' | 'golem' | 'cultist' | 'warden';
 export type StaggerKind = 'interrupted' | 'stunned' | 'dazed' | 'knockdown';

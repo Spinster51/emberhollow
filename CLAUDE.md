@@ -16,12 +16,13 @@ Browser 3D action RPG (Three.js + TypeScript + Vite). Owner play-tests; Claude w
 - `src/core/` — `Input.ts` (keyboard/mouse/gamepad, `setVirtual` for tests), `toon.ts` (toon material + inverted-hull outline), `noise.ts`.
 - `src/world/layouts.ts` — `TEST_LAYOUT` (small test map, used by `?test`) and `MAIN_LAYOUT` (600 m world: town Emberhollow, Sunmeadow 1–5, Gloamwood 5–10, Sundered Ruins 10–15, roads, spires, camps, campfires, chests, dungeon gate). `?test&world=main` loads the main map in tests.
 - `src/world/World.ts` — heightmap terrain from a layout (50 m chunks, heightmap normals), boxes with a 16 m spatial grid, collision queries (`heightAt`, `groundAt`, `resolveBoxes`, `terrainWall`, `isSolid`), `regionAt`, `addSolid`/`removeSolid`.
-- `src/world/` also: `Campfires.ts`, `Chests.ts`, `Town.ts` (NPCs, talk, furniture shop), `quests.ts` (12 quests + `QuestLog`).
+- `src/world/` also: `Campfires.ts`, `Chests.ts`, `Town.ts` (NPCs, talk, furniture shop), `quests.ts` (13 quests + `QuestLog`).
+- `src/world/Dungeon.ts` — the Ember Vault (M6): rooms built from boxes high above the NW corner (`VAULT`, y = 300, so nothing outside can see or aggro it), doors (colliders via `world.addCollider/removeCollider`), push block + plate, crystal hit-switch (`strike`, `projectileHit`), key chest + locked door, timed lever, brazier, exits; `save()/load()`. Boxes have `noClimb` and `zone: 'dungeon'`.
 - `src/game/Adventure.ts` — M5 glue: campfire rest/fast travel, chests, quests turn-in, lost gold on death, regions + autosave, furniture placement, save slots (serialize/apply).
 - `src/save/Save.ts` — IndexedDB account save (shared home + 4 slots), validate, export/import JSON.
 - `src/ui/` also: `Dialog.ts` (talk/menu box), `SlotSelect.ts` (title screen), `MapView.ts` (minimap, M map, quest tracker).
 - `src/player/Player.ts` — state machine: ground / air / roll / climb / climbJump / mantle / glide / attack / stagger / dead; stamina; fall damage; 3-hit combo with input buffer; block/parry; `takeHit`.
-- `src/combat/` — `combat.ts` (Hit, Poise + stagger thresholds, `inArc`), `Enemy.ts` (AI state machine: idle/chase/windup/active/recover/stagger/return/dead), `EnemyModel.ts` (blocky slime/boar/bandit), `Enemies.ts` (camps, strikes, separation, respawn), `LockOn.ts` (target pick + flick switch).
+- `src/combat/` — `combat.ts` (Hit, Poise + stagger thresholds, `inArc`), `Enemy.ts` (AI state machine: idle/chase/windup/active/recover/stagger/return/dead/phase; boss moves `BOSS_MOVES`, phase 2, summoned adds), `EnemyModel.ts` (blocky slime/boar/bandit), `Enemies.ts` (camps, strikes, separation, respawn), `LockOn.ts` (target pick + flick switch).
 - `src/player/PlayerModel.ts` — placeholder blocky model with procedural poses (real Quaternius models come later).
 - `src/classes/` — `classes.ts` (4 class defs: stats, combos, skills, passives; XP curve), `Progression.ts` (level, XP, attributes, tree ranks, respec), `Skills.ts` (16 skills on keys 1–4: cooldowns, mana, effects).
 - `src/combat/Projectiles.ts` — mage bolts, fireball, meteor, thrown knives; area blasts. All player damage goes through `Enemies.damage()` (fire, backstab, burn, lifesteal).
@@ -45,8 +46,9 @@ Browser 3D action RPG (Three.js + TypeScript + Vite). Owner play-tests; Claude w
 - Milestone 2 (combat) — done.
 - Milestone 3 (loot + test home base) — done.
 - Milestone 4 (classes) — done.
-- Milestone 5 (world) — done: 600 m map with 3 regions + town, 6 new enemy kinds (57 enemies), 7 campfires, 10 chests, 6 villagers, 12 quests (house, glider, story hook), furniture, bed, expansion, IndexedDB saves with 4 slots, minimap and map. 128/128 smoke checks.
-- Next: milestone 6 — dungeon behind the sealed door (puzzles: keys, plates, push blocks, timed levers, hit-switches) and the 2-phase boss.
+- Milestone 5 (world) — done: 600 m map with 3 regions + town, 6 new enemy kinds (57 enemies), 7 campfires, 10 chests, 6 villagers, 12 quests (house, glider, story hook), furniture, bed, expansion, IndexedDB saves with 4 slots, minimap and map.
+- Milestone 6 (dungeon) — done: the Ember Vault (6 rooms, plate + push block, crystal hit-switch, key + locked door, timed lever, brazier), the 2-phase Cinder Warden with its own loot, quest "Embers Below". 149/149 smoke checks.
+- Next: milestone 7 — crafting (salvage, +1..+10 upgrades, re-roll), sound, menus, graphics presets, balance, GitHub Pages deploy. Then milestone 8 — art pass (owner's call: build to M7 first, then research CC0 low-poly glTF models and swap them in).
 
 ## Decisions log
 - Skills: only project-relevant ones kept, stored in `.claude/skills/` (see its README for the list and sources). Other-engine and unrelated skills removed.
@@ -55,4 +57,6 @@ Browser 3D action RPG (Three.js + TypeScript + Vite). Owner play-tests; Claude w
 - Loot (M3): no saving yet (bag, chest and displays reset on reload until M5 saves); item icons are text labels until an icon pass; attributes give a first-pass effect (Str dmg/armour, Dex crit/speed, Vit HP/stamina) to be revisited in M4; greatsword is not two-handed yet.
 - Classes (M4): attributes start at 0 and come only from level-ups (5/level) and gear, so class identity is in base stats (HP, mana, crit, armour); every class has mana for skills; skills unlock at levels 1/2/4/6; weapons are class-locked (armour is shared); off-hands: shields (Warrior, Tank), tome (Mage), parrying dagger (Assassin); respec is at the home's training book (home moves into town in M5); a parry briefly opens the Tank's Riposte (1.5 s). Potions (Q/R) not built yet.
 - World (M5): the home, its furniture, displays and the storage chest are account-wide (shared by all 4 slots); quests, campfires found, chests opened and the glider are per character. Death drops 20% of carried gold where you fell (never expires). Resting at a campfire resets all enemies. Region/place/NPC/quest names are original. Gear from the main map needs level = item level − 1.
+- Dungeon (M6): the vault is part of the main World (high above the NW corner) rather than a separate scene, so every system keeps one world. Enemies only aggro within 6 m of height, so ground and vault enemies never mix. Dungeon enemies respawn like camps; the boss too (re-fightable). Pushing the block is an E action (one 2 m step) rather than walking into it. A rune resets it. Phase-2 skeleton adds vanish when they die or when the boss resets.
+- Art pass (agreed after M5): build milestones 6–7 first, then a new milestone 8 replaces the placeholder models with CC0 low-poly glTF (three.js loads glTF/GLB natively).
 - Graphiti memory MCP: skipped (cloud container can't reach a hosted graph DB). This file is the project memory instead — keep Status and Decisions up to date.

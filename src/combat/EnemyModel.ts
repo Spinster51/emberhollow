@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { addOutline, toonMaterial } from '../core/toon';
-import type { Enemy } from './Enemy';
+import { BOSS_MOVES, type Enemy } from './Enemy';
 
 const box = (w: number, h: number, d: number, mat: THREE.Material, outline = true) => {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -58,6 +58,9 @@ export class EnemyModel {
         break;
       case 'golem':
         this.buildHumanoid({ skin: 0x8a8274, coat: 0x7a7266, pants: 0x6a6258, weapon: 'none', scale: 1.7, glow: true });
+        break;
+      case 'warden':
+        this.buildHumanoid({ skin: 0x3e3632, coat: 0x5a2a1e, pants: 0x2e2724, cloth: 0xd0501e, weapon: 'sword', scale: 2.3, glow: true });
         break;
     }
     this.body.traverse((o) => {
@@ -300,7 +303,9 @@ export class EnemyModel {
     if (e.hp < this.lastHp) this.flash = 1;
     this.lastHp = e.hp;
     this.flash = Math.max(0, this.flash - dt * 8);
-    for (const m of this.mats) m.emissiveIntensity = this.flash * 0.8;
+    // The boss smoulders in its second phase.
+    const ember = e.phase === 2 ? 0.25 + Math.sin(performance.now() / 120) * 0.1 : 0;
+    for (const m of this.mats) m.emissiveIntensity = Math.max(this.flash * 0.8, ember);
 
     const speed = Math.hypot(e.vel.x, e.vel.z);
     this.phase += dt * (2 + speed * 2.5);
@@ -379,21 +384,28 @@ export class EnemyModel {
     let legL = s;
     let legR = -s;
     let twist = 0;
-    const style = e.stats.style;
-    if (style === 'ranged' && (e.state === 'windup' || e.state === 'active')) {
+    const wind = e.move ? BOSS_MOVES[e.move].windup / e.rage() : e.stats.windup;
+    let style: string = e.stats.style;
+    if (e.move === 'slam' || e.move === 'nova') style = 'slam';
+    else if (e.move === 'volley') style = 'ranged';
+    if (e.state === 'phase') {
+      // Roar: arms wide and high.
+      armL = armR = -2.6;
+      p.torso.rotation.x = -0.25;
+    } else if (style === 'ranged' && (e.state === 'windup' || e.state === 'active')) {
       // Draw the bow / raise the staff toward the target.
       armL = -1.55;
       armR = this.weapon === 'bow' ? -1.45 : -2.4;
       twist = this.weapon === 'bow' ? -0.3 : 0;
     } else if (style === 'slam' && e.state === 'windup') {
-      const k = Math.min(1, e.stateTime / e.stats.windup);
+      const k = Math.min(1, e.stateTime / wind);
       armL = armR = -3.0 * k;
       p.torso.rotation.x = -0.2 * k;
     } else if (style === 'slam' && (e.state === 'active' || e.state === 'recover')) {
       armL = armR = -0.9;
       p.torso.rotation.x = 0.35;
     } else if (e.state === 'windup') {
-      const k = Math.min(1, e.stateTime / (e.stats.windup * (e.comboStep > 0 ? 0.6 : 1)));
+      const k = Math.min(1, e.stateTime / (wind * (e.comboStep > 0 ? 0.6 : 1)));
       armR = -0.5 - k * 2.2;
       twist = k * 0.5;
     } else if (e.state === 'active' || e.state === 'recover') {

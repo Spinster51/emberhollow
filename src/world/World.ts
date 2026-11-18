@@ -12,6 +12,10 @@ export interface Box {
   maxY: number;
   minZ: number;
   maxZ: number;
+  /** Dungeon walls, doors and push blocks cannot be climbed (DESIGN §6). */
+  noClimb?: boolean;
+  /** 'dungeon' boxes are left off the overworld map. */
+  zone?: string;
 }
 
 export interface WallHit {
@@ -99,15 +103,7 @@ export class World {
 
   /** Add a solid block after construction (buildings). Every side is climbable, like other boxes. */
   addSolid(box: Box, material: THREE.Material): THREE.Mesh {
-    this.boxes.push(box);
-    for (let ix = Math.floor((box.minX - 1) / CELL); ix <= Math.floor((box.maxX + 1) / CELL); ix++) {
-      for (let iz = Math.floor((box.minZ - 1) / CELL); iz <= Math.floor((box.maxZ + 1) / CELL); iz++) {
-        const key = ix * 100003 + iz;
-        let list = this.grid.get(key);
-        if (!list) this.grid.set(key, (list = []));
-        list.push(box);
-      }
-    }
+    this.addCollider(box);
     const m = new THREE.Mesh(
       new THREE.BoxGeometry(box.maxX - box.minX, box.maxY - box.minY, box.maxZ - box.minZ),
       material,
@@ -118,15 +114,37 @@ export class World {
     return m;
   }
 
+  /** Collision only (the caller draws it): doors and push blocks that move. */
+  addCollider(box: Box): void {
+    this.boxes.push(box);
+    for (let ix = Math.floor((box.minX - 1) / CELL); ix <= Math.floor((box.maxX + 1) / CELL); ix++) {
+      for (let iz = Math.floor((box.minZ - 1) / CELL); iz <= Math.floor((box.maxZ + 1) / CELL); iz++) {
+        const key = ix * 100003 + iz;
+        let list = this.grid.get(key);
+        if (!list) this.grid.set(key, (list = []));
+        list.push(box);
+      }
+    }
+  }
+
   /** Remove a block added with addSolid (doors that open). */
   removeSolid(box: Box, mesh: THREE.Object3D): void {
+    this.removeCollider(box);
+    this.group.remove(mesh);
+  }
+
+  removeCollider(box: Box): void {
     const i = this.boxes.indexOf(box);
     if (i >= 0) this.boxes.splice(i, 1);
     for (const list of this.grid.values()) {
       const j = list.indexOf(box);
       if (j >= 0) list.splice(j, 1);
     }
-    this.group.remove(mesh);
+  }
+
+  /** Is a collider currently in the world? */
+  hasCollider(box: Box): boolean {
+    return this.boxes.includes(box);
   }
 
   /** Boxes that might touch a point (within ~1 m). */

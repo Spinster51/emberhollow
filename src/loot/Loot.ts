@@ -59,6 +59,12 @@ export class Loot {
     // Gear mostly drops for your own class (some for others, for the shared chest).
     const forCls = this.rand() < 0.8 ? cls : undefined;
     if (this.rand() < t.gear) this.spawn({ kind: 'item', item: rollItem(this.rand, e.level, undefined, forCls), amount: 1 }, at);
+    if (e.isBoss) {
+      // The boss's own table: an epic or legendary for your class, plus one rare-or-better.
+      const big = this.rand() < 0.35 ? 'legendary' : 'epic';
+      this.spawn({ kind: 'item', item: rollItem(this.rand, e.level, big, cls), amount: 1 }, at);
+      this.spawn({ kind: 'item', item: rollItem(this.rand, e.level, this.rand() < 0.5 ? 'epic' : 'rare', cls), amount: 1 }, at);
+    }
   }
 
   /** Gold on the ground (your lost gold after dying is persistent). */

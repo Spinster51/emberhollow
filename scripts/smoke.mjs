@@ -1442,6 +1442,291 @@ check('title screen shows 4 slots; new character goes through class pick', s.car
 check('entering a region shows its name', s.banner === 'Sunmeadow', s.banner);
 check('minimap and M map', s.map && s.mini);
 
+// ================================================================ dungeon (milestone 6)
+// 4x. The sealed gate opens after "The Sealed Door"; inside it is dark and the walls can't be climbed.
+s = await run2(() => {
+  const g = window.game;
+  const a = g.adventure;
+  const d = a.dungeon;
+  for (const e of g.enemies.list) {
+    e.home.copy(window.homes.get(e));
+    e.reset();
+    e.frozen = true;
+  }
+  g.chooseClass('warrior');
+  a.startFresh();
+  const out = { enemies: d.enemies.length, boss: d.boss.kind };
+  const gate = a.gatePos();
+  window.tp(gate.x, gate.z);
+  g.step(1);
+  out.sealed = g.focus?.label;
+  g.step(1, { held: ['interact'] });
+  out.stillOutside = !d.contains(g.player.pos);
+  a.quests.states.sealed = { status: 'done', progress: [1] };
+  g.step(1);
+  out.open = g.focus?.label;
+  g.focus.act();
+  g.step(2, null, true);
+  out.inside = d.contains(g.player.pos);
+  out.region = a.region.name;
+  out.banner = document.querySelector('#banner b').textContent;
+  out.dark = g.interior && g.scene.fog.far < 100;
+  // Push into the west wall of the entry hall for a second: no climbing.
+  const p = g.player;
+  const e = d.entryPoint();
+  window.tp(e.x - 6.5, e.z, e.y + 1);
+  g.cam.yaw = Math.PI / 2; // facing -x (west)
+  let climbed = false;
+  for (let i = 0; i < 60; i++) {
+    g.step(1, { moveY: 1 });
+    if (p.state === 'climb' || p.state === 'mantle') climbed = true;
+  }
+  out.climbed = climbed;
+  out.wallX = Math.round((p.pos.x - e.x) * 10) / 10;
+  g.map.toggle(true);
+  g.step(3, null, true);
+  out.vaultMap = document.querySelector('.bigmap canvas').height > document.querySelector('.bigmap canvas').width;
+  g.map.toggle(false);
+  return out;
+});
+check('dungeon: 6 enemies + the Cinder Warden spawn inside', s.enemies === 7 && s.boss === 'warden', JSON.stringify(s));
+check('dungeon: the gate stays sealed until "The Sealed Door" is done', s.sealed === 'Examine the sealed door' && s.stillOutside && s.open === 'Enter the Ember Vault', JSON.stringify(s));
+check('dungeon: entering takes you inside (banner, dark lighting)', s.inside && s.region === 'The Ember Vault' && s.banner === 'The Ember Vault' && s.dark, JSON.stringify(s));
+check('dungeon walls cannot be climbed', !s.climbed && s.wallX <= -7.4, JSON.stringify(s));
+check('dungeon floor plan on the M map', s.vaultMap, JSON.stringify(s));
+
+// 4x. Pressure plate + push block.
+s = await run2(() => {
+  const g = window.game;
+  const d = g.adventure.dungeon;
+  const w = g.world;
+  const door = d.doors.get('plateDoor');
+  const out = { shut: w.hasCollider(door.box) };
+  const plate = d.spot('plate');
+  window.tp(plate.x, plate.z, plate.y + 1);
+  g.step(2);
+  out.standing = !w.hasCollider(door.box);
+  window.tp(plate.x - 4, plate.z + 5, plate.y + 1);
+  g.step(2);
+  out.stepOff = w.hasCollider(door.box);
+  // Push from the west side, three times.
+  const pushes = [];
+  for (let i = 0; i < 3; i++) {
+    const c = d.blockCentre();
+    window.tp(c.x - 1.4, c.z, c.y + 1);
+    g.step(1);
+    pushes.push(g.focus?.label);
+    g.focus.act();
+    g.step(30);
+  }
+  out.pushes = pushes.join(',');
+  out.onPlate = d.blockOnPlate();
+  out.solved = d.solved.has('plate');
+  window.tp(plate.x - 4, plate.z + 5, plate.y + 1);
+  g.step(2);
+  out.open = !w.hasCollider(door.box);
+  // The block can't be pushed out of the room.
+  return out;
+});
+check('pressure plate opens its door only while pressed', s.shut && s.standing && s.stepOff, JSON.stringify(s));
+check('push block slides onto the plate and keeps the door open', s.pushes === 'Push block,Push block,Push block' && s.onPlate && s.solved && s.open, JSON.stringify(s));
+
+// 4x. Hit-switch crystal: melee swing over the railing, or a projectile.
+s = await run2(() => {
+  const g = window.game;
+  const d = g.adventure.dungeon;
+  const w = g.world;
+  const p = g.player;
+  const c = d.crystalPos();
+  const door = d.doors.get('crystalDoor');
+  const out = { shut: w.hasCollider(door.box) };
+  window.tp(c.x + 1.95, c.z, c.y - 1);
+  p.facing = Math.atan2(1, 0); // face -x
+  g.cam.yaw = p.facing;
+  g.step(1, { held: ['attack'] });
+  g.step(40);
+  out.melee = d.solved.has('crystal');
+  out.open = !w.hasCollider(door.box);
+  // Projectile: reset and shoot a bolt at it from across the room.
+  d.solved.delete('crystal');
+  d.sync();
+  const from = c.clone().add(new THREE_V(8, 0, 0));
+  g.projectiles.spawn({ kind: 'bolt', from, vel: new THREE_V(-30, 0, 0), damage: 5, crit: false, poise: 0, knockback: 0, life: 1 });
+  g.step(30);
+  out.bolt = d.solved.has('crystal');
+  return out;
+  function THREE_V(x, y, z) {
+    return p.pos.clone().set(x, y, z);
+  }
+});
+check('hit-switch: striking the crystal over the railing opens the east door', s.shut && s.melee && s.open, JSON.stringify(s));
+check('hit-switch: a projectile also triggers it', s.bolt, JSON.stringify(s));
+
+// 4x. Small key and the locked door.
+s = await run2(() => {
+  const g = window.game;
+  const d = g.adventure.dungeon;
+  const w = g.world;
+  const p = g.player;
+  const door = d.doors.get('lockDoor');
+  const lock = d.spot('lockDoor');
+  window.tp(lock.x, lock.z + 1.5, lock.y + 1);
+  g.step(1);
+  const out = { label: g.focus?.label };
+  g.focus.act();
+  out.stillShut = w.hasCollider(door.box);
+  const kc = d.spot('keyChest');
+  window.tp(kc.x, kc.z + 1.2, kc.y + 1);
+  g.step(1);
+  out.chest = g.focus?.label;
+  g.focus.act();
+  out.keys = d.keys;
+  window.tp(lock.x, lock.z + 1.5, lock.y + 1);
+  g.step(1);
+  out.label2 = g.focus?.label;
+  g.focus.act();
+  out.open = !w.hasCollider(door.box);
+  out.keysAfter = d.keys;
+  return out;
+});
+check('locked door needs the small key from the side room', s.label === 'Locked door' && s.stillShut && s.chest === 'Open chest' && s.keys === 1, JSON.stringify(s));
+check('the key opens the door and is used up', s.label2 === 'Unlock door (Small Key)' && s.open && s.keysAfter === 0, JSON.stringify(s));
+
+// 4x. Timed lever: walking is too slow, sprinting makes it.
+s = await run2(() => {
+  const g = window.game;
+  const d = g.adventure.dungeon;
+  const w = g.world;
+  const p = g.player;
+  const door = d.doors.get('timedDoor');
+  const lever = d.spot('lever');
+  const run = (held) => {
+    p.respawn();
+    window.tp(lever.x - 1.5, lever.z, lever.y + 1);
+    g.cam.yaw = 0;
+    p.facing = 0;
+    g.step(1);
+    const label = g.focus?.label;
+    g.focus.act();
+    g.step(1);
+    const opened = !w.hasCollider(door.box);
+    window.tp(0 + lever.x - 2, lever.z - 1, lever.y + 1);
+    for (let i = 0; i < 60 * 9 && !d.solved.has('timed'); i++) g.step(1, { moveY: 1, held });
+    g.step(60 * 3);
+    return { label, opened, solved: d.solved.has('timed'), shut: w.hasCollider(door.box), z: Math.round(p.pos.z - lever.z) };
+  };
+  const walk = run([]);
+  const sprint = run(['dodge']);
+  return { walk, sprint, timer: d.timer };
+});
+check('timed lever opens the far gate, which shuts again if you walk', s.walk.label === 'Pull lever' && s.walk.opened && !s.walk.solved && s.walk.shut, JSON.stringify(s));
+check('sprinting through in time keeps the gate open', s.sprint.solved && !s.sprint.shut, JSON.stringify(s));
+
+// 4x. Brazier, saving dungeon progress, and a fresh character starting over.
+s = await run2(() => {
+  const g = window.game;
+  const a = g.adventure;
+  const d = a.dungeon;
+  const p = g.player;
+  const br = d.spot('brazier');
+  window.tp(br.x, br.z + 1.5, br.y + 1);
+  g.step(1);
+  const out = { label: g.focus?.label };
+  p.hp = 10;
+  g.focus.act();
+  out.healed = p.hp === p.stats.maxHp;
+  out.respawnInside = d.contains(p.respawnPoint);
+  p.takeHit({ damage: 99999, poise: 0, knockback: 0, from: p.pos.clone() });
+  g.step(60 * 4);
+  out.wokeAtBrazier = d.contains(p.pos) && p.pos.distanceTo(br) < 4;
+  const save = a.serialize();
+  out.saved = [...save.dungeon.solved].sort().join(',');
+  out.brazier = save.dungeon.brazier;
+  a.startFresh();
+  out.fresh = d.solved.size === 0 && g.world.hasCollider(d.doors.get('lockDoor').box) && !d.blockOnPlate();
+  a.apply(save);
+  out.restored = d.solved.size === save.dungeon.solved.length && d.blockOnPlate() && !g.world.hasCollider(d.doors.get('timedDoor').box);
+  out.valid = !!window.items.validateAccount({ version: 1, home: null, slots: [save] }).slots[0].dungeon;
+  return out;
+});
+check('brazier heals and becomes the respawn point', s.label === 'Light the brazier' && s.healed && s.respawnInside && s.wokeAtBrazier, JSON.stringify(s));
+check('dungeon progress is saved per character', s.saved === 'crystal,keychest,lock,plate,timed' && s.brazier && s.fresh && s.restored && s.valid, JSON.stringify(s));
+
+// 4x. The Cinder Warden: two phases, adds, its own loot, the quest.
+s = await run2(() => {
+  const g = window.game;
+  const a = g.adventure;
+  const d = a.dungeon;
+  const p = g.player;
+  const b = d.boss;
+  window.levelTo(15);
+  p.respawn();
+  a.quests.accept('warden');
+  for (const e of g.enemies.list) e.frozen = true;
+  b.reset();
+  b.frozen = false;
+  const home = b.pos.clone();
+  window.tp(home.x, home.z + 9, home.y + 1);
+  g.cam.yaw = 0;
+  const out = {};
+  let hurt = false;
+  const moves = new Set();
+  for (let i = 0; i < 60 * 12; i++) {
+    p.hp = p.stats.maxHp;
+    p.stamina = p.stats.maxStamina;
+    const before = p.hp;
+    g.step(1);
+    if (p.hp < before) hurt = true;
+    if (b.move) moves.add(b.move);
+  }
+  g.step(0, null, true);
+  out.hurt = hurt;
+  out.moves1 = [...moves].sort().join(',');
+  out.bar = document.querySelector('#bossbar').style.display === '' && document.querySelector('#bossbar b').textContent;
+  // Knock it below half: it roars (untouchable) and calls two skeletons.
+  b.takeHit({ damage: Math.ceil(b.hp - b.maxHp * 0.49), poise: 0, knockback: 0, from: p.pos.clone() }, []);
+  out.phase = `${b.phase}/${b.state}`;
+  const hp = b.hp;
+  b.takeHit({ damage: 100, poise: 0, knockback: 0, from: p.pos.clone() }, []);
+  out.roarImmune = b.hp === hp;
+  g.step(Math.ceil(1.7 * 60));
+  out.adds = g.enemies.list.filter((e) => e.summoner === b).length;
+  for (const e of g.enemies.list) if (e.summoner === b) e.frozen = true;
+  moves.clear();
+  for (let i = 0; i < 60 * 25; i++) {
+    p.hp = p.stats.maxHp;
+    g.step(1);
+    if (b.move) moves.add(b.move);
+  }
+  out.moves2 = [...moves].sort().join(',');
+  g.step(0, null, true);
+  out.bar2 = document.querySelector('#bossbar b').textContent;
+  // Kill it.
+  b.takeHit({ damage: 1e6, poise: 0, knockback: 0, from: p.pos.clone() }, []);
+  g.step(2);
+  const drops = g.loot.drops;
+  out.rare = drops.filter((x) => x.kind === 'item' && ['epic', 'legendary'].includes(x.item.rarity)).length;
+  out.ember = drops.some((x) => x.kind === 'material' && x.material === 'ember') || (p.inv.materials.ember ?? 0) > 0;
+  out.quest = a.quests.ready(a.quests.active().find((q) => q.id === 'warden'), a.owner());
+  for (const e of g.enemies.list) if (e.summoner === b) e.takeHit({ damage: 1e6, poise: 0, knockback: 0, from: p.pos.clone() }, []);
+  g.step(60 * 4);
+  out.addsGone = g.enemies.list.filter((e) => e.summoner === b).length;
+  const ex = d.spot('exitG');
+  window.tp(ex.x, ex.z, ex.y + 1);
+  g.step(1);
+  out.exit = g.focus?.label;
+  g.focus.act();
+  g.step(2);
+  out.outside = !d.contains(p.pos) && !g.interior;
+  return out;
+});
+check('Cinder Warden attacks (sweep / slam / charge) and hurts', s.hurt && s.moves1.length > 0 && !s.moves1.includes('volley') && !s.moves1.includes('nova'), JSON.stringify(s));
+check('boss health bar at the top', s.bar === 'The Cinder Warden', JSON.stringify(s));
+check('phase 2 at half health: untouchable roar, two skeleton adds', s.phase === '2/phase' && s.roarImmune && s.adds === 2, JSON.stringify(s));
+check('phase 2 adds orb volleys or the fire nova', /volley|nova/.test(s.moves2) && s.bar2.includes('enraged'), JSON.stringify(s));
+check('boss loot: epic/legendary gear and a Warden Ember; quest done', s.rare >= 1 && s.ember && s.quest, JSON.stringify(s));
+check('adds vanish after death; the exit opens behind the boss', s.addsGone === 0 && s.exit === 'Leave the vault' && s.outside, JSON.stringify(s));
+
 if (shotsDir) {
   await run2(() => {
     const g = window.game;
@@ -1493,6 +1778,45 @@ if (shotsDir) {
     for (let i = 0; i < 4; i++) g.step(1, null, true);
   });
   await shot2('22-forest-wolves');
+  // The dungeon: plate room, crystal, the boss.
+  const vault = (spot, dx, dz, yaw, pitch = 0.35, dist = 8) =>
+    run2(([spot, dx, dz, yaw, pitch, dist]) => {
+      const g = window.game;
+      const d = g.adventure.dungeon;
+      d.load(null);
+      const at = d.spot(spot);
+      window.tp(at.x + dx, at.z + dz, at.y + 1);
+      g.player.facing = yaw;
+      g.cam.yaw = yaw;
+      g.cam.pitch = pitch;
+      g.cam.distance = dist;
+      for (let i = 0; i < 6; i++) g.step(1, null, true);
+    }, [spot, dx, dz, yaw, pitch, dist]);
+  await vault('plate', -2, 7, 0);
+  await shot2('23-vault-plate-room');
+  await vault('crystal', 3, 0, Math.PI / 2, 0.2, 6);
+  await shot2('24-vault-crystal');
+  await vault('lever', -1, 0, 0, 0.15, 6);
+  await shot2('25-vault-timed-hall');
+  await run2(() => {
+    const g = window.game;
+    const b = g.adventure.dungeon.boss;
+    b.reset();
+    b.frozen = true;
+    window.tp(b.pos.x + 2, b.pos.z + 9, b.pos.y + 1);
+    g.cam.yaw = 0.2;
+    g.cam.pitch = 0.3;
+    g.cam.distance = 8;
+    b.state = 'chase';
+    for (let i = 0; i < 6; i++) g.step(1, null, true);
+  });
+  await shot2('26-vault-boss');
+  await run2(() => {
+    const g = window.game;
+    g.map.toggle(true);
+    g.step(3, null, true);
+  });
+  await shot2('27-vault-map');
 }
 
 check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));

@@ -34,6 +34,11 @@ export class Enemies {
     e.hooks = {
       shoot: (...a) => this.hooks?.shoot(...a),
       blast: (...a) => this.hooks?.blast(...a),
+      summon: (boss, k, x, z, lvl) => {
+        const add = this.spawn(k, x, z, lvl);
+        add.summoner = boss;
+        add.taunt(0.1);
+      },
     };
     const m = new EnemyModel(e);
     this.list.push(e);
@@ -54,6 +59,29 @@ export class Enemies {
     }
     this.separate(player);
     this.respawn(dt, player);
+    this.dismiss();
+  }
+
+  /** Summoned helpers leave once dead, or when their boss gives up the fight. */
+  private dismiss(): void {
+    for (let i = this.list.length - 1; i >= 0; i--) {
+      const e = this.list[i];
+      const boss = e.summoner;
+      if (!boss) continue;
+      const gone = (!e.alive && (this.deadFor.get(e) ?? 0) > 3 && !e.lootPending) || boss.state === 'idle' || boss.state === 'return';
+      if (gone) this.remove(i);
+    }
+  }
+
+  private remove(i: number): void {
+    const e = this.list[i];
+    this.list.splice(i, 1);
+    const m = this.models.findIndex((x) => x.enemy === e);
+    if (m >= 0) {
+      this.group.remove(this.models[m].root);
+      this.models.splice(m, 1);
+    }
+    this.deadFor.delete(e);
   }
 
   /** Enemies that died since the last call (by any cause); each is reported once. */
@@ -159,6 +187,7 @@ export class Enemies {
 
   /** Put every enemy back at its camp (e.g. after the player dies). */
   resetAll(): void {
+    for (let i = this.list.length - 1; i >= 0; i--) if (this.list[i].summoner) this.remove(i);
     for (const e of this.list) e.reset();
     this.deadFor.clear();
   }

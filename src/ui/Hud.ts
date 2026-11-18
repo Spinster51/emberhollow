@@ -40,6 +40,7 @@ export class Hud {
   private bars = new Map<Enemy, HTMLDivElement>();
   private reticle: HTMLDivElement;
   private bannerEl!: HTMLDivElement;
+  private bossBar!: HTMLDivElement;
   private bannerTime = 0;
   /** The full map screen (M) is open. */
   mapOpen = false;
@@ -85,7 +86,8 @@ export class Hud {
       </svg>
       <div class="prompt" id="prompt">Click to play</div>
       <div class="toast" id="toast"></div>
-      <div class="banner" id="banner"><b></b><small></small></div>`;
+      <div class="banner" id="banner"><b></b><small></small></div>
+      <div class="bossbar" id="bossbar" style="display:none"><b></b><div class="track"><div></div></div></div>`;
     this.hpFill = root.querySelector('#hp-fill')!;
     this.hpText = root.querySelector('#hp-text')!;
     this.debug = root.querySelector('#debug')!;
@@ -97,6 +99,7 @@ export class Hud {
     this.toast = root.querySelector('#toast')!;
     this.interact = root.querySelector('#interact')!;
     this.bannerEl = root.querySelector('#banner')!;
+    this.bossBar = root.querySelector('#bossbar')!;
     this.feedBox = root.querySelector('#feed')!;
     this.goldText = root.querySelector('#gold')!;
     this.mpFill = root.querySelector('#mp-fill')!;
@@ -303,7 +306,16 @@ export class Hud {
     });
 
     // Enemy health bars: shown while locked on or recently hit.
+    // The boss gets a big bar at the top while the fight is on.
+    const boss = enemies.find((e) => e.isBoss && e.alive && e.state !== 'idle' && e.state !== 'return' && e.pos.distanceTo(camera.position) < 50);
+    this.bossBar.style.display = boss ? '' : 'none';
+    if (boss) {
+      (this.bossBar.querySelector('b') as HTMLElement).textContent = `${boss.stats.name}${boss.phase === 2 ? ' — enraged' : ''}`;
+      (this.bossBar.querySelector('.track > div') as HTMLElement).style.width = `${(boss.hp / boss.maxHp) * 100}%`;
+      this.bossBar.classList.toggle('enraged', boss.phase === 2);
+    }
     for (const e of enemies) {
+      if (e.isBoss) continue;
       let bar = this.bars.get(e);
       if (!bar) {
         bar = document.createElement('div');

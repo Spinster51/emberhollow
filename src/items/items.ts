@@ -195,6 +195,7 @@ export const MATERIALS: Record<string, Material> = {
   bone: { id: 'bone', name: 'Old Bone', color: '#e6dcc4' },
   core: { id: 'core', name: 'Golem Core', color: '#ff8a3a' },
   ash: { id: 'ash', name: 'Cult Ash', color: '#9a7ab0' },
+  ember: { id: 'ember', name: 'Warden Ember', color: '#ff5a2a' },
 };
 
 let nextUid = 1;

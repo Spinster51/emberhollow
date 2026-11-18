@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Game } from '../Game';
+import { VAULT } from '../world/Dungeon';
 
 const PX = 2; // metres per map pixel
 
@@ -10,6 +11,7 @@ const PX = 2; // metres per map pixel
  */
 export class MapView {
   private base: HTMLCanvasElement | null = null;
+  private vault: HTMLCanvasElement | null = null;
   private mini: HTMLCanvasElement;
   private big: HTMLDivElement;
   private bigCanvas: HTMLCanvasElement;
@@ -48,7 +50,8 @@ export class MapView {
     this.big.style.display = open ? '' : 'none';
     if (open) {
       document.exitPointerLock?.();
-      this.drawBig();
+      if (this.inVault()) this.drawVaultBig();
+      else this.drawBig();
     }
     this.game.updateMenus();
   }
@@ -82,10 +85,97 @@ export class MapView {
     // Buildings and ruins.
     ctx.fillStyle = 'rgba(70, 55, 45, 0.85)';
     for (const b of w.boxes) {
+      if (b.zone === 'dungeon') continue;
       ctx.fillRect((b.minX + w.half) / PX, (b.minZ + w.half) / PX, Math.max(1, (b.maxX - b.minX) / PX), Math.max(1, (b.maxZ - b.minZ) / PX));
     }
     this.base = c;
     return c;
+  }
+
+  /** True while the player is inside the dungeon (the maps show its floor plan). */
+  private inVault(): boolean {
+    const d = this.game.adventure.dungeon;
+    return !!d && d.contains(this.game.player.pos);
+  }
+
+  /** The dungeon floor plan, 2 px per metre, redrawn as doors open. */
+  private vaultImage(): HTMLCanvasElement {
+    const d = this.game.adventure.dungeon!;
+    const b = d.bounds;
+    const k = 2;
+    if (!this.vault) {
+      this.vault = document.createElement('canvas');
+      this.vault.width = Math.round((b.maxX - b.minX) * k);
+      this.vault.height = Math.round((b.maxZ - b.minZ) * k);
+    }
+    const ctx = this.vault.getContext('2d')!;
+    ctx.fillStyle = '#3a2f26';
+    ctx.fillRect(0, 0, this.vault.width, this.vault.height);
+    const rect = (bx: { minX: number; maxX: number; minZ: number; maxZ: number }) =>
+      ctx.fillRect((bx.minX - b.minX) * k, (bx.minZ - b.minZ) * k, (bx.maxX - bx.minX) * k, (bx.maxZ - bx.minZ) * k);
+    // Skip the floor slab (it sits below the floor level).
+    const above = d.walls.filter((wbox) => wbox.minY >= VAULT.y - 0.01);
+    ctx.fillStyle = '#9a8c7a';
+    for (const wbox of above) if (wbox.maxY - wbox.minY > 2.5) rect(wbox);
+    ctx.fillStyle = '#7a8a9a';
+    for (const wbox of above) if (wbox.maxY - wbox.minY <= 2.5) rect(wbox);
+    for (const door of d.doors.values()) {
+      if (door.open) continue;
+      ctx.fillStyle = '#c070ff';
+      rect(door.box);
+    }
+    ctx.fillStyle = '#b0a490';
+    rect(d.block.box);
+    return this.vault;
+  }
+
+  private vaultMarkers(): { x: number; z: number; kind: string }[] {
+    const d = this.game.adventure.dungeon!;
+    const out: { x: number; z: number; kind: string }[] = [];
+    const br = d.spot('brazier');
+    out.push({ x: br.x, z: br.z, kind: d.brazierLit ? 'fire' : 'fireUnknown' });
+    if (d.boss.alive) out.push({ x: d.boss.pos.x, z: d.boss.pos.z, kind: 'dungeon' });
+    return out;
+  }
+
+  private drawVaultMini(): void {
+    const ctx = this.mini.getContext('2d')!;
+    const d = this.game.adventure.dungeon!;
+    const b = d.bounds;
+    const p = this.game.player.pos;
+    const size = this.mini.width;
+    const span = 70;
+    const scale = size / span;
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = '#120d0a';
+    ctx.fillRect(0, 0, size, size);
+    ctx.drawImage(this.vaultImage(), (p.x - span / 2 - b.minX) * 2, (p.z - span / 2 - b.minZ) * 2, span * 2, span * 2, 0, 0, size, size);
+    for (const m of this.vaultMarkers()) {
+      const x = Math.max(5, Math.min(size - 5, (m.x - p.x) * scale + size / 2));
+      const y = Math.max(5, Math.min(size - 5, (m.z - p.z) * scale + size / 2));
+      this.drawMarker(ctx, x, y, m.kind, 4);
+    }
+    this.drawPlayer(ctx, size / 2, size / 2, 5);
+    ctx.strokeStyle = '#6b4a2b';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(0, 0, size, size);
+  }
+
+  private drawVaultBig(): void {
+    const d = this.game.adventure.dungeon!;
+    const b = d.bounds;
+    const img = this.vaultImage();
+    const h = Math.min(window.innerHeight - 140, 640);
+    const k = h / (b.maxZ - b.minZ);
+    const w = (b.maxX - b.minX) * k;
+    this.bigCanvas.width = Math.round(w);
+    this.bigCanvas.height = Math.round(h);
+    const ctx = this.bigCanvas.getContext('2d')!;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img, 0, 0, w, h);
+    for (const m of this.vaultMarkers()) this.drawMarker(ctx, (m.x - b.minX) * k, (m.z - b.minZ) * k, m.kind, 5);
+    const p = this.game.player.pos;
+    this.drawPlayer(ctx, (p.x - b.minX) * k, (p.z - b.minZ) * k, 7);
   }
 
   update(): void {
@@ -95,8 +185,13 @@ export class MapView {
     }
     this.frame++;
     if (this.frame % 3 !== 0) return;
-    this.drawMini();
-    if (this.game.hud.mapOpen) this.drawBig();
+    if (this.inVault()) {
+      this.drawVaultMini();
+      if (this.game.hud.mapOpen) this.drawVaultBig();
+    } else {
+      this.drawMini();
+      if (this.game.hud.mapOpen) this.drawBig();
+    }
     const a = this.game.adventure;
     const lines = a.quests.tracker(a.owner());
     this.tracker.innerHTML = lines.slice(0, 14).join('<br>');

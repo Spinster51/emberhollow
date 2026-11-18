@@ -852,3 +852,50 @@ body {
   font-size: 12px;
   color: #c8b89a;
 }
+
+.bossbar {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(520px, 70vw);
+  text-align: center;
+  pointer-events: none;
+}
+
+.bossbar b {
+  display: block;
+  color: #ffd27a;
+  font-size: 16px;
+  letter-spacing: 1px;
+  text-shadow: 1px 1px 0 #000;
+  margin-bottom: 4px;
+}
+
+.bossbar .track {
+  height: 12px;
+  background: #2a1b14;
+  border: 2px solid #000;
+}
+
+.bossbar .track > div {
+  height: 100%;
+  background: #c8402e;
+  transition: width 0.15s;
+}
+
+.bossbar.enraged .track > div {
+  background: #ff7a2a;
+}
+
+.countdown {
+  position: absolute;
+  top: 26%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 26px;
+  font-weight: bold;
+  color: #ffb070;
+  text-shadow: 2px 2px 0 #000;
+  pointer-events: none;
+}

@@ -103,9 +103,16 @@ export const QUESTS: QuestDef[] = [
   {
     id: 'sealed', name: 'The Sealed Door', giver: 'elder', level: 10,
     intro: 'Something old stirs under the ruins — the cultists, the walking dead, the tremors. Find the great sealed door in the far north of the ruins and tell me what you see.',
-    done: 'Sealed, you say… then whatever is below is trying to get out. Rest, and ready yourself: when the door opens, Emberhollow will need you.',
+    done: 'Sealed, you say… then whatever is below is trying to get out. These words from the old carvings should open it. Rest, and ready yourself before you go down.',
     objectives: [{ type: 'reach', x: 160, z: -213, r: 12, label: 'Find the sealed door in the Sundered Ruins' }],
     reward: { xp: 2000, gold: 250, unlock: 'dungeon' },
+  },
+  {
+    id: 'warden', name: 'Embers Below', giver: 'elder', level: 13, requires: ['sealed'],
+    intro: 'The tremors come from the vault beneath the sealed door. The carvings name its keeper: the Cinder Warden. Go down, find your way past its locks, and put out that fire for good.',
+    done: 'The tremors have stopped. Emberhollow sleeps easy tonight — because of you. Take this; it was meant for a hero.',
+    objectives: [{ type: 'kill', kind: 'warden', count: 1 }],
+    reward: { xp: 5000, gold: 1000, item: 'legendary' },
   },
   {
     id: 'expand', name: 'More Room', giver: 'steward',
@@ -137,6 +144,7 @@ export interface QuestOwner {
 export function objectiveText(o: Objective, have: number): string {
   switch (o.type) {
     case 'kill':
+      if (o.count === 1) return `Defeat ${ENEMY_STATS[o.kind].name}${have >= 1 ? ' ✓' : ''}`;
       return `Defeat ${ENEMY_STATS[o.kind].name}s: ${Math.min(have, o.count)}/${o.count}`;
     case 'collect':
       return `${MATERIALS[o.material]?.name ?? o.material}: ${Math.min(have, o.count)}/${o.count}`;

@@ -5,6 +5,7 @@ import type { HomeSave } from '../home/Home';
 import type { Item } from '../items/items';
 import type { ClassId, Attr } from '../classes/classes';
 import type { QuestState } from '../world/quests';
+import type { DungeonSave } from '../world/Dungeon';
 
 export const SAVE_VERSION = 1;
 export const SLOTS = 4;
@@ -29,6 +30,8 @@ export interface CharSave {
   opened: string[];
   quests: Record<string, QuestState>;
   glider: boolean;
+  /** Dungeon puzzle progress (milestone 6; missing in older saves). */
+  dungeon?: DungeonSave;
   playTime: number;
   savedAt: number;
 }

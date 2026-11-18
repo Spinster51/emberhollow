@@ -5,7 +5,19 @@ import type { Player } from '../player/Player';
 import { mulberry32 } from '../core/noise';
 import { Poise, inArc, type CombatFx, type Hit, type HitResult } from './combat';
 
-export type EnemyState = 'idle' | 'chase' | 'windup' | 'active' | 'recover' | 'stagger' | 'return' | 'dead';
+export type EnemyState = 'idle' | 'chase' | 'windup' | 'active' | 'recover' | 'stagger' | 'return' | 'dead' | 'phase';
+
+/** Boss attacks (the Cinder Warden). */
+export type BossMove = 'sweep' | 'slam' | 'charge' | 'volley' | 'nova';
+export const BOSS_MOVES: Record<BossMove, { windup: number; active: number; recover: number }> = {
+  sweep: { windup: 0.75, active: 0.2, recover: 0.7 },
+  slam: { windup: 1.1, active: 0.2, recover: 1.1 },
+  charge: { windup: 0.8, active: 0.9, recover: 1.0 },
+  volley: { windup: 0.9, active: 0.4, recover: 0.8 },
+  nova: { windup: 1.6, active: 0.25, recover: 1.2 },
+};
+/** Seconds the boss roars between phases (it cannot be hurt meanwhile). */
+export const PHASE_ROAR = 1.6;
 
 const C = TUNING.combat;
 const STEP_UP = 0.5;
@@ -14,6 +26,8 @@ const STEP_UP = 0.5;
 export interface EnemyHooks {
   shoot(e: Enemy, kind: 'arrow' | 'orb', from: THREE.Vector3, vel: THREE.Vector3): void;
   blast(at: THREE.Vector3, radius: number, color: number): void;
+  /** Boss phase 2 calls in helpers. */
+  summon?(boss: Enemy, kind: EnemyKind, x: number, z: number, level: number): void;
 }
 
 let nextId = 1;
@@ -74,6 +88,12 @@ export class Enemy {
   lastDamage = 0;
   /** Seconds since the last hit taken (drives the HP bar). */
   sinceHit = 99;
+  /** Boss: 1 or 2. */
+  phase = 1;
+  /** Boss: the attack being made. */
+  move: BossMove | null = null;
+  /** Summoned helpers vanish after death and never respawn. */
+  summoner: Enemy | null = null;
 
   constructor(
     readonly kind: EnemyKind,
@@ -108,8 +128,32 @@ export class Enemy {
     this.burnTime = 0;
     this.slowTime = 0;
     this.tauntTime = 0;
+    this.phase = 1;
+    this.move = null;
     this.setState('idle');
     this.lootPending = false;
+  }
+
+  get isBoss(): boolean {
+    return this.stats.style === 'boss';
+  }
+
+  /** Phase 2 bosses move faster and wind up quicker. */
+  rage(): number {
+    return this.phase === 2 ? 1.3 : 1;
+  }
+
+  /** Cross the phase-2 threshold: roar (untouchable), then fight harder. */
+  private checkPhase(): void {
+    if (!this.isBoss || this.phase !== 1 || this.hp <= 0) return;
+    if (this.hp > this.maxHp * (this.stats.phase2 ?? 0.5)) return;
+    this.phase = 2;
+    this.move = null;
+    this.vel.set(0, 0, 0);
+    this.poise.reset();
+    this.staggerKind = null;
+    this.hooks?.blast(this.pos.clone().setY(this.pos.y + 0.3), 6, 0xff6a2a);
+    this.setState('phase');
   }
 
   /** Burning: one tick of damage per second. Works even while frozen (tests). */
@@ -127,7 +171,7 @@ export class Enemy {
         this.hp = 0;
         this.vel.set(0, 0, 0);
         this.setState('dead');
-      }
+      } else this.checkPhase();
     }
   }
 
@@ -187,6 +231,10 @@ export class Enemy {
           this.setState('return');
           break;
         }
+        if (this.isBoss) {
+          this.chaseBoss(dt, toPlayer, dist);
+          break;
+        }
         if (dist <= s.range && this.cooldown <= 0) {
           this.comboStep = 0;
           this.setState('windup');
@@ -213,21 +261,44 @@ export class Enemy {
         break;
       }
       case 'windup': {
-        const windup = s.combo && this.comboStep > 0 ? s.windup * 0.6 : s.windup;
+        let windup = s.combo && this.comboStep > 0 ? s.windup * 0.6 : s.windup;
+        if (this.move) windup = BOSS_MOVES[this.move].windup / this.rage();
+        const charging = s.style === 'charge' || this.move === 'charge';
         this.brake(dt);
-        this.turnTo(toPlayer, s.style === 'charge' ? 3 : 10, dt);
+        this.turnTo(toPlayer, charging ? 3 : 10, dt);
         if (this.stateTime >= windup) {
           this.chargeDir.copy(this.facingVector());
-          if (s.style === 'lunge' || s.style === 'charge') this.vel.copy(this.chargeDir).multiplyScalar(s.lunge);
+          if (s.style === 'lunge' || charging) this.vel.copy(this.chargeDir).multiplyScalar(s.lunge);
           this.setState('active');
         }
         break;
       }
+      case 'phase':
+        this.brake(dt);
+        this.turnTo(toPlayer, 4, dt);
+        if (this.stateTime >= PHASE_ROAR) {
+          // Two skeletons climb out beside the boss.
+          const side = new THREE.Vector3(-toPlayer.z, 0, toPlayer.x).normalize().multiplyScalar(5);
+          for (const k of [1, -1]) {
+            this.hooks?.summon?.(this, 'skeleton', this.pos.x + side.x * k, this.pos.z + side.z * k, this.level - 2);
+          }
+          this.cooldown = 0.8;
+          this.setState('chase');
+        }
+        break;
       case 'active':
         this.updateActive(dt, player, dist);
         break;
       case 'recover':
         this.brake(dt);
+        if (this.move) {
+          if (this.stateTime >= BOSS_MOVES[this.move].recover / this.rage()) {
+            this.move = null;
+            this.cooldown = s.cooldown * (this.phase === 2 ? 0.7 : 1) * (0.8 + this.rand() * 0.4);
+            this.setState('chase');
+          }
+          break;
+        }
         if (this.stateTime >= s.recover) {
           if (s.combo && this.comboStep === 0 && dist < s.range + 0.8) {
             this.comboStep = 1;
@@ -242,7 +313,7 @@ export class Enemy {
         const k = Math.exp(-6 * dt);
         this.vel.x *= k;
         this.vel.z *= k;
-        this.move(dt);
+        this.walk(dt);
         if (this.stateTime >= this.staggerTime) {
           this.staggerKind = null;
           this.setState('chase');
@@ -255,6 +326,7 @@ export class Enemy {
         if (d.length() < 0.8) {
           this.hp = this.maxHp;
           this.poise.reset();
+          this.phase = 1;
           this.setState('idle');
         } else if (playerReachable && ((dist < s.aggro * 0.5 && fromHome < s.leash * 0.8) || this.tauntTime > 0)) {
           this.setState('chase');
@@ -266,8 +338,77 @@ export class Enemy {
     }
   }
 
+  /** Boss: walk in and pick an attack for the distance. */
+  private chaseBoss(dt: number, toPlayer: THREE.Vector3, dist: number): void {
+    const s = this.stats;
+    if (this.cooldown <= 0) {
+      let m: BossMove | null = null;
+      const r = this.rand();
+      if (dist <= 4.6) m = this.phase === 2 && r < 0.25 ? 'nova' : r < 0.6 ? 'sweep' : 'slam';
+      else if (dist > 8 && dist < 22) m = this.phase === 2 && r < 0.5 ? 'volley' : 'charge';
+      if (m) {
+        this.move = m;
+        this.setState('windup');
+        return;
+      }
+    }
+    if (dist > 3.5) this.steer(toPlayer, s.speed * this.rage(), dt, 6);
+    else {
+      this.brake(dt);
+      this.turnTo(toPlayer, 6, dt);
+    }
+  }
+
+  private updateBoss(dt: number, player: Player, dist: number): void {
+    const s = this.stats;
+    const move = this.move!;
+    const near = Math.abs(player.pos.y - this.pos.y) < 2.5;
+    if (move === 'charge') {
+      this.vel.copy(this.chargeDir).multiplyScalar(s.lunge * this.speedMult());
+      const blocked = this.walk(dt);
+      if (!this.hitDone && dist < s.radius + 0.9 && near) {
+        this.hitDone = true;
+        this.hitPlayer(player);
+      }
+      if (blocked) {
+        // Slammed into the arena wall: a long opening.
+        this.vel.set(0, 0, 0);
+        this.move = null;
+        this.hooks?.blast(this.pos.clone().setY(this.pos.y + 0.5), 2, 0x9a8a70);
+        this.stagger({ kind: 'dazed', time: 1.4 });
+        return;
+      }
+    } else {
+      this.brake(dt);
+      if (!this.hitDone && this.stateTime >= BOSS_MOVES[move].active * 0.5) {
+        this.hitDone = true;
+        const at = this.pos.clone().setY(this.pos.y + 0.3);
+        if (move === 'sweep') {
+          if (near && inArc(this.pos, this.facingVector(), player.pos, s.range + 0.4, 170)) this.hitPlayer(player);
+        } else if (move === 'slam' || move === 'nova') {
+          const r = move === 'nova' ? 9 : (s.aoe ?? 5);
+          this.hooks?.blast(at, r, move === 'nova' ? 0xff6a2a : 0x9a8a70);
+          if (near && dist < r + 0.35) this.hitPlayer(player);
+        } else if (move === 'volley') {
+          const from = this.pos.clone().setY(this.pos.y + s.centreY + 0.6);
+          const aim = player.pos.clone().setY(player.pos.y + 1).sub(from).normalize();
+          const speed = s.projectileSpeed ?? 14;
+          for (let i = -2; i <= 2; i++) {
+            const v = aim.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), i * 0.22).multiplyScalar(speed);
+            this.hooks?.shoot(this, 'orb', from.clone(), v);
+          }
+        }
+      }
+    }
+    if (this.stateTime >= BOSS_MOVES[move].active) this.setState('recover');
+  }
+
   private updateActive(dt: number, player: Player, dist: number): void {
     const s = this.stats;
+    if (this.move) {
+      this.updateBoss(dt, player, dist);
+      return;
+    }
     const touch = s.radius + 0.35 + 0.35;
     if (s.style === 'melee') {
       this.brake(dt);
@@ -302,7 +443,7 @@ export class Enemy {
       } else {
         this.vel.copy(this.chargeDir).multiplyScalar(s.lunge * this.speedMult());
       }
-      const blocked = this.move(dt);
+      const blocked = this.walk(dt);
       if (!this.hitDone && dist < touch) {
         this.hitDone = true;
         const r = this.hitPlayer(player);
@@ -326,7 +467,9 @@ export class Enemy {
   /** A projectile from this enemy reached the player (called by Projectiles). */
   projectileHit(player: Player, from: THREE.Vector3): HitResult {
     const s = this.stats;
-    return player.takeHit({ damage: this.damage, poise: s.poiseDamage, knockback: s.knockback, from });
+    // Boss orbs come five at a time: each one stings less.
+    const k = this.isBoss ? 0.55 : 1;
+    return player.takeHit({ damage: Math.round(this.damage * k), poise: s.poiseDamage * k, knockback: s.knockback, from });
   }
 
   private hitPlayer(player: Player): HitResult {
@@ -341,7 +484,7 @@ export class Enemy {
   }
 
   takeHit(hit: Hit, fx: CombatFx[], crit = false): HitResult {
-    if (!this.alive) return 'ignored';
+    if (!this.alive || this.state === 'phase') return 'ignored';
     let damage = hit.damage;
     if (this.state === 'stagger') damage *= C.staggeredDamageBonus;
     damage = Math.round(damage);
@@ -360,12 +503,14 @@ export class Enemy {
       this.setState('dead');
       return 'hit';
     }
+    this.checkPhase();
+    if ((this.state as EnemyState) === 'phase') return 'hit';
     if (st) {
       this.vel.copy(away).multiplyScalar(hit.knockback);
       this.stagger(st);
     } else {
       // Light hits only nudge; a charging boar keeps going.
-      if (!(this.stats.style === 'charge' && this.state === 'active') && this.stats.style !== 'slam') {
+      if (!(this.stats.style === 'charge' && this.state === 'active') && this.stats.style !== 'slam' && !this.isBoss) {
         this.pos.addScaledVector(away, hit.knockback * 0.04);
       }
       if (this.state === 'idle' || this.state === 'return') this.setState('chase');
@@ -396,6 +541,8 @@ export class Enemy {
   }
 
   private stagger(st: { kind: StaggerKind; time: number }): void {
+    if (this.state === 'phase') return;
+    this.move = null;
     this.staggerKind = st.kind;
     this.staggerTime = st.time;
     this.setState('stagger');
@@ -415,7 +562,7 @@ export class Enemy {
     const k = Math.exp(-12 * dt);
     this.vel.x *= k;
     this.vel.z *= k;
-    this.move(dt);
+    this.walk(dt);
   }
 
   /** Accelerate toward `dir` at `speed` (null = stop) and move; turns to face the motion. */
@@ -425,11 +572,11 @@ export class Enemy {
     this.vel.x += (target.x - this.vel.x) * k;
     this.vel.z += (target.z - this.vel.z) * k;
     if (turnRate > 0 && target.lengthSq() > 0.01) this.turnTo(target, turnRate, dt);
-    this.move(dt);
+    this.walk(dt);
   }
 
   /** Move by vel*dt on the ground. Enemies never climb or step off cliffs. Returns true if blocked. */
-  private move(dt: number): boolean {
+  private walk(dt: number): boolean {
     const nx = this.pos.x + this.vel.x * dt;
     const nz = this.pos.z + this.vel.z * dt;
     const g = this.world.groundAt(nx, nz, this.pos.y + STEP_UP);

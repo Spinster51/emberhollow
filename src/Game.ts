@@ -68,6 +68,10 @@ export class Game {
   readonly adventure: Adventure;
   readonly map: MapView;
   private sun: THREE.DirectionalLight;
+  private hemi: THREE.HemisphereLight;
+  private sky: { color: THREE.Color; near: number; far: number };
+  /** Inside the dungeon: dark fog, dim torchlight. */
+  interior = false;
   private accumulator = 0;
   private last = performance.now();
   private pixelScale = loadPixelScale();
@@ -84,7 +88,9 @@ export class Game {
     this.scene.background = sky;
     this.scene.fog = new THREE.Fog(sky, layout.name === 'main' ? 90 : 60, layout.name === 'main' ? 260 : 220);
     this.camera.far = layout.name === 'main' ? 300 : 600;
-    this.scene.add(new THREE.HemisphereLight('#cfe8ff', '#5a4a36', 1.3));
+    this.sky = { color: sky.clone(), near: this.scene.fog.near, far: this.scene.fog.far };
+    this.hemi = new THREE.HemisphereLight('#cfe8ff', '#5a4a36', 1.3);
+    this.scene.add(this.hemi);
     this.sun = new THREE.DirectionalLight('#fff2d6', 2.2);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
@@ -219,7 +225,9 @@ export class Game {
       const vel = p.aimPoint.clone().sub(from).normalize().multiplyScalar(30);
       this.projectiles.spawn({ kind: 'bolt', from, vel, ...p.strike, life: 1.2 });
     } else if (p.strike) {
-      const { hits } = this.enemies.applyStrike(p.strike, p, this.fx);
+      const { hits: enemyHits } = this.enemies.applyStrike(p.strike, p, this.fx);
+      const sw = this.adventure.dungeon?.strike(p.pos, p.facingVector(), p.strike.reach ?? TUNING.combat.reach, p.strike.arc ?? TUNING.combat.arc);
+      const hits = enemyHits + (sw ? 1 : 0);
       if (hits > 0) {
         const heavy = p.strike.index === p.combo().length - 1;
         this.hitStop = heavy ? TUNING.combat.hitStop.heavy : TUNING.combat.hitStop.light;
@@ -268,6 +276,35 @@ export class Game {
       faceCamera: () => (this.cam.yaw = this.player.facing),
       hitStop: (f) => (this.hitStop = Math.max(this.hitStop, f)),
     };
+  }
+
+  /** Switch between open-air and dungeon lighting. */
+  setInterior(on: boolean): void {
+    if (this.interior === on) return;
+    this.interior = on;
+    const fog = this.scene.fog as THREE.Fog;
+    if (on) {
+      const dark = new THREE.Color('#0e0b0a');
+      this.scene.background = dark;
+      fog.color.copy(dark);
+      fog.near = 14;
+      fog.far = 55;
+      this.hemi.color.set('#e8d8c8');
+      this.hemi.groundColor.set('#3a2a20');
+      this.hemi.intensity = 1.1;
+      this.sun.intensity = 1.3;
+      this.sun.color.set('#ffd2a0');
+    } else {
+      this.scene.background = this.sky.color.clone();
+      fog.color.copy(this.sky.color);
+      fog.near = this.sky.near;
+      fog.far = this.sky.far;
+      this.hemi.color.set('#cfe8ff');
+      this.hemi.groundColor.set('#5a4a36');
+      this.hemi.intensity = 1.3;
+      this.sun.intensity = 2.2;
+      this.sun.color.set('#fff2d6');
+    }
   }
 
   /** Show the class pick screen (new character). */

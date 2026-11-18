@@ -99,6 +99,20 @@ Each enemy family drops its own crafting material.
 ### Dungeon
 A separate interior map entered through a door. Puzzles any class can solve: keys and locked doors, pressure plates, push blocks, timed levers, hit-switches.
 
+**The Ember Vault (built in milestone 6).** The sealed gate in the far north of the ruins opens once "The Sealed Door" quest is done. Walls cannot be climbed; the vault is dark and torch-lit, with its own floor plan on the minimap and M map. Rooms in order:
+1. **Entry hall:** the way back out.
+2. **Plate room:** a pressure plate opens the next door only while something is on it. Push the stone block (E, one 2 m step per push) onto it; a rune resets the block if it gets stuck.
+3. **Crystal room:** strike the crystal behind its railing (melee over the rail, or any projectile) to open the side room. The side room holds the Small Key. The key opens the locked north door.
+4. **Long hall:** a lever opens the far gate for 7.5 s. Walking is too slow; sprinting makes it, and the gate then stays open.
+5. **Brazier:** heals and becomes your respawn point.
+6. **Arena: the Cinder Warden** (level 16).
+   - **Phase 1:** a wide sweep, a ground slam and a charge. Charging into a wall dazes it.
+   - **Phase 2 (below half HP):** an untouchable roar, then two skeleton helpers. It turns faster and adds a five-orb volley and a large fire nova.
+   - **Loot:** its own table, with an epic or legendary for your class, a second rare-or-better item and a Warden Ember. It comes back like other enemies, so it is re-fightable.
+   - **After the fight:** an exit opens behind it.
+
+Puzzle progress, the key and the brazier are saved per character. The elder's last quest, "Embers Below", asks you to defeat the Warden.
+
 ## 8. Classes
 Class is permanent per character.
 
@@ -174,6 +188,7 @@ Light: a few townspeople, simple kill/collect quests, the glider quest, and a re
 5. **World:** full map, town, NPCs, quests, campfires, fast travel, saving; home base in town (house quest, expansions, bed, furniture).
 6. **Dungeon:** puzzles and the 2-phase boss.
 7. **Crafting and polish:** crafting, sound, menus, graphics presets, balance, GitHub Pages deploy.
+8. **Art pass (agreed with the owner after milestone 5):** replace the placeholder blocky models with CC0 low-poly glTF models (characters, animations, enemies, weapons/armour, dungeon kit, nature). First research where to get them, then swap them in and re-tune hitboxes and attack timings.
 
 ## 15. Reference and licensing rules
 - Studied for ideas only: Veloren (GPL-3.0). No code copied.

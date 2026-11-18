@@ -12,6 +12,9 @@ import type { Interactable } from '../loot/Loot';
 import { buildFurniture, FURNITURE } from '../home/furniture';
 import type { ClassId } from '../classes/classes';
 import type { Region } from '../world/layouts';
+import { Dungeon } from '../world/Dungeon';
+
+const VAULT_REGION: Region = { id: 'dungeon', name: 'The Ember Vault', level: 15 };
 
 const AUTOSAVE_EVERY = 120;
 
@@ -24,6 +27,9 @@ export class Adventure {
   readonly campfires: Campfires;
   readonly chests: Chests;
   readonly town: Town;
+  /** The dungeon (main map only). */
+  readonly dungeon: Dungeon | null = null;
+  private lastT = 0;
   readonly quests = new QuestLog();
   readonly dialog: Dialog;
   readonly slotSelect: SlotSelect;
@@ -67,6 +73,21 @@ export class Adventure {
       message: (t) => game.player.events.push(t),
     });
     game.scene.add(this.campfires.group, this.chests.group, this.town.group);
+    if (world.layout.dungeon) {
+      const d = new Dungeon(world, game.enemies, hudRoot, {
+        message: (t) => game.player.events.push(t),
+        heal: () => this.healFull(),
+        setRespawn: (at) => {
+          game.player.respawnPoint.copy(at);
+          void this.autosave();
+        },
+        leave: () => this.leaveDungeon(),
+        gold: (n, at) => game.loot.dropGold(n, at),
+      });
+      this.dungeon = d;
+      game.scene.add(d.group);
+      game.projectiles.hitTest = (a, b, r) => d.projectileHit(a, b, r);
+    }
     game.player.gliderUnlocked = world.layout.gliderAtStart;
     this.region = world.regionAt(game.player.pos.x, game.player.pos.z);
     const town = this.campfires.get('town');
@@ -133,10 +154,13 @@ export class Adventure {
       }
     }
 
-    const r = g.world.regionAt(p.pos.x, p.pos.z);
+    const inside = !!this.dungeon?.contains(p.pos);
+    g.setInterior(inside);
+    this.dungeon?.update(dt, p);
+    const r = inside ? VAULT_REGION : g.world.regionAt(p.pos.x, p.pos.z);
     if (r.id !== this.region.id) {
       this.region = r;
-      g.hud.banner(r.name, r.id === 'town' ? 'Safe haven' : `Level ${r.level}`);
+      g.hud.banner(r.name, r.id === 'town' ? 'Safe haven' : r.id === 'dungeon' ? 'Dungeon · Level 15' : `Level ${r.level}`);
       void this.autosave();
     }
     this.sinceSave += dt;
@@ -145,6 +169,9 @@ export class Adventure {
   }
 
   render(t: number): void {
+    const dt = Math.min(0.1, Math.max(0, t - this.lastT));
+    this.lastT = t;
+    this.dungeon?.animate(t, dt);
     this.campfires.animate(t);
     this.town.animate(t, this.game.player.pos);
   }
@@ -155,7 +182,62 @@ export class Adventure {
       ...this.campfires.interactables(p, (c) => this.campfireMenu(c)),
       ...this.chests.interactables(p, (c) => this.openChest(c)),
       ...this.town.interactables(p),
+      ...this.gateInteractables(p),
+      ...(this.dungeon ? this.dungeon.interactables(p, !this.dungeon.boss.alive) : []),
     ];
+  }
+
+  // ---------------------------------------------------------------- dungeon
+
+  /** Is the sealed door open for this character? */
+  vaultOpen(): boolean {
+    return this.quests.status('sealed') === 'done';
+  }
+
+  /** Where the gate's E prompt sits, just south of the door. */
+  gatePos(): THREE.Vector3 {
+    const [x, z] = this.game.world.layout.dungeon!;
+    return new THREE.Vector3(x, this.game.world.groundAt(x, z + 5, 1e9), z + 5);
+  }
+
+  private gateInteractables(p: THREE.Vector3): Interactable[] {
+    if (!this.dungeon) return [];
+    const at = this.gatePos();
+    if (Math.hypot(p.x - at.x, p.z - at.z) > 4) return [];
+    const open = this.vaultOpen();
+    return [{
+      pos: at,
+      radius: 3.5,
+      label: open ? 'Enter the Ember Vault' : 'Examine the sealed door',
+      color: open ? '#ffa63a' : '#c070ff',
+      act: () => {
+        if (open) this.enterDungeon();
+        else this.game.player.events.push('A great door, sealed with old carvings. The town elder may know more.');
+      },
+    }];
+  }
+
+  enterDungeon(): void {
+    const d = this.dungeon;
+    if (!d) return;
+    const p = this.game.player;
+    const at = d.entryPoint();
+    p.pos.set(at.x, this.game.world.groundAt(at.x, at.z, at.y + 2), at.z);
+    p.vel.set(0, 0, 0);
+    p.facing = 0;
+    this.game.cam.yaw = 0;
+    this.game.lockOn.target = null;
+    void this.autosave();
+  }
+
+  leaveDungeon(): void {
+    const p = this.game.player;
+    const at = this.gatePos();
+    p.pos.set(at.x, this.game.world.groundAt(at.x, at.z + 2, 1e9), at.z + 2);
+    p.vel.set(0, 0, 0);
+    this.game.lockOn.target = null;
+    this.game.player.events.push('You climb back out into the ruins.');
+    void this.autosave();
   }
 
   // ---------------------------------------------------------------- campfires, bed, chests
@@ -364,6 +446,7 @@ export class Adventure {
     this.chests.opened.clear();
     this.chests.sync();
     this.campfires.discovered.clear();
+    this.dungeon?.load(null);
     const town = this.campfires.get('town');
     if (town) {
       this.campfires.discovered.add('town');
@@ -425,6 +508,7 @@ export class Adventure {
       opened: [...this.chests.opened],
       quests: JSON.parse(JSON.stringify(this.quests.toJSON())),
       glider: p.gliderUnlocked,
+      dungeon: this.dungeon?.save(),
       playTime: this.playTime,
       savedAt: Date.now(),
     };
@@ -458,6 +542,7 @@ export class Adventure {
     this.chests.opened.clear();
     for (const id of s.opened ?? []) this.chests.opened.add(id);
     this.chests.sync();
+    this.dungeon?.load(s.dungeon);
     p.gliderUnlocked = s.glider;
     if (s.respawn) p.respawnPoint.set(...s.respawn);
     p.respawn();
@@ -465,7 +550,7 @@ export class Adventure {
     this.lastDeaths = p.deaths;
     this.playTime = s.playTime ?? 0;
     this.sinceSave = 0;
-    this.region = g.world.regionAt(p.pos.x, p.pos.z);
+    this.region = this.dungeon?.contains(p.pos) ? VAULT_REGION : g.world.regionAt(p.pos.x, p.pos.z);
   }
 
   async exportSave(): Promise<void> {

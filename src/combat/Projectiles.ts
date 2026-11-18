@@ -53,6 +53,9 @@ export class Projectiles {
   readonly group = new THREE.Group();
   private blasts: Blast[] = [];
 
+  /** Extra targets for player shots (the dungeon's crystal switch). True = the shot hit one. */
+  hitTest: ((from: THREE.Vector3, to: THREE.Vector3, r: number) => boolean) | null = null;
+
   constructor(private world: World) {}
 
   spawn(spec: ProjectileSpec): void {
@@ -90,6 +93,11 @@ export class Projectiles {
         } else {
           this.sync(p);
         }
+        continue;
+      }
+      if (this.hitTest?.(prev, p.pos, r)) {
+        if (p.aoe) this.explode(p, enemies, player, fx);
+        this.remove(p);
         continue;
       }
       for (const e of enemies.list) {
