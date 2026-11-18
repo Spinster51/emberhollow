@@ -4,6 +4,8 @@ import type { Input } from '../core/Input';
 import type { Box, WallHit, World } from '../world/World';
 import { Poise, type CombatFx, type Hit, type HitResult } from '../combat/combat';
 import type { StaggerKind } from '../config';
+import { Inventory, type Derived } from '../items/Inventory';
+import { mulberry32 } from '../core/noise';
 
 export type MoveState =
   | 'ground' | 'air' | 'roll' | 'climb' | 'climbJump' | 'mantle' | 'glide'
@@ -15,6 +17,11 @@ export interface Strike {
   damage: number;
   poise: number;
   knockback: number;
+  crit: boolean;
+  /** Extra fire damage per hit (affix). */
+  fire: number;
+  /** Sets the target alight (Emberfang). */
+  burn: boolean;
 }
 
 const C = TUNING.combat;
@@ -33,11 +40,20 @@ export class Player {
   state: MoveState = 'air';
   stateTime = 0;
 
+  readonly inv = new Inventory();
+  /** Stats from gear; refresh with `refreshStats()` after equipment changes. */
+  stats: Derived = this.inv.derive();
+  private statsVersion = this.inv.version;
+  /** Seeded so crits are repeatable in tests. */
+  rand = mulberry32(1234);
+
   stamina = T.stamina.max;
   exhausted = false;
   private sinceStaminaUse = 0;
 
   hp = T.maxHp;
+  /** Character level (levelling arrives with classes in M4). Gear needs a minimum level. */
+  level = 1;
   gliderUnlocked = true; // test map: unlocked from the start
   sprinting = false;
   invulnerable = false;
@@ -85,8 +101,9 @@ export class Player {
   respawn(): void {
     this.pos.copy(this.world.spawn);
     this.vel.set(0, 0, 0);
-    this.hp = T.maxHp;
-    this.stamina = T.stamina.max;
+    this.refreshStats();
+    this.hp = this.stats.maxHp;
+    this.stamina = this.stats.maxStamina;
     this.exhausted = false;
     this.poise.reset();
     this.blocking = false;
@@ -134,6 +151,8 @@ export class Player {
     this.strike = null;
     this.readInput(input, dt);
     this.poise.update(dt);
+    this.refreshStats();
+    if (this.stats.uniques.has('regen')) this.heal(C.regen * dt);
     this.aim = aim;
     this.camYaw = camYaw;
 
@@ -192,6 +211,7 @@ export class Player {
   }
 
   private aim: THREE.Vector3 | null = null;
+  private strikeCrit = false;
   private camYaw = 0;
 
   private regenStamina(dt: number): void {
@@ -199,8 +219,8 @@ export class Player {
       this.state === 'climb' || this.state === 'glide' || this.state === 'climbJump' || this.sprinting;
     if (draining || this.sinceStaminaUse < T.stamina.regenDelay) return;
     if (!['ground', 'roll', 'mantle', 'attack', 'stagger'].includes(this.state)) return;
-    this.stamina = Math.min(T.stamina.max, this.stamina + T.stamina.regen * dt);
-    if (this.exhausted && this.stamina >= T.stamina.max * T.stamina.recoverFraction) {
+    this.stamina = Math.min(this.stats.maxStamina, this.stamina + T.stamina.regen * dt);
+    if (this.exhausted && this.stamina >= this.stats.maxStamina * T.stamina.recoverFraction) {
       this.exhausted = false;
     }
   }
@@ -211,7 +231,7 @@ export class Player {
     const moving = wish.lengthSq() > 0.01;
 
     // Dodge on press; keep holding to sprint afterwards.
-    if (input.consumePress('dodge') && this.canUseStamina(1) && this.spend(T.stamina.roll)) {
+    if (input.consumePress('dodge') && this.canUseStamina(1) && this.spend(this.rollCost(0))) {
       this.startRoll(moving ? wish : this.facingVector());
       return;
     }
@@ -231,7 +251,7 @@ export class Player {
     this.sprinting = moving && !this.blocking && input.isHeld('dodge') && this.canUseStamina();
     if (this.sprinting) this.spend(T.stamina.sprint * dt);
 
-    let speed = this.sprinting ? T.sprintSpeed : T.walkSpeed;
+    let speed = (this.sprinting ? T.sprintSpeed : T.walkSpeed) * this.stats.moveSpeed;
     if (this.blocking) speed *= C.block.moveFactor;
     const target = wish.clone().multiplyScalar(speed);
     this.accelerate(target, T.groundAccel, dt);
@@ -395,6 +415,7 @@ export class Player {
   private startAttack(index: number): void {
     const a = C.combo[index];
     if (!this.spend(a.stamina)) return;
+    this.strikeCrit = this.rand() < this.stats.crit;
     this.attackBuffer = 0;
     this.comboIndex = index;
     this.chainQueued = false;
@@ -409,20 +430,20 @@ export class Player {
 
   /** Current phase of the attack: 'windup' | 'swing' | 'recover'. */
   attackPhase(): 'windup' | 'swing' | 'recover' {
-    const a = C.combo[this.comboIndex];
+    const a = this.attackTimes();
     if (this.stateTime < a.windup) return 'windup';
     if (this.stateTime < a.windup + a.swing) return 'swing';
     return 'recover';
   }
 
   private updateAttack(dt: number, input: Input, wish: THREE.Vector3): void {
-    const a = C.combo[this.comboIndex];
+    const a = this.attackTimes();
     const t = this.stateTime;
     const phase = this.attackPhase();
 
     // Roll out of the wind-up or recovery (never the swing), for extra stamina.
     if (phase !== 'swing' && input.consumePress('dodge')) {
-      const cost = T.stamina.roll + C.rollCancelExtra;
+      const cost = this.rollCost(C.rollCancelExtra);
       if (this.canUseStamina(1) && this.spend(cost)) {
         this.startRoll(wish.lengthSq() > 0.01 ? wish : this.facingVector());
         return;
@@ -448,7 +469,17 @@ export class Player {
 
     if (!this.strikeDone && t >= a.windup + a.swing * a.hitAt) {
       this.strikeDone = true;
-      this.strike = { index: this.comboIndex, damage: a.damage, poise: a.poise, knockback: a.knockback };
+      const st = this.stats;
+      const damage = st.weaponDamage * a.mult * st.damageMult * (this.strikeCrit ? st.critMult : 1);
+      this.strike = {
+        index: this.comboIndex,
+        damage: Math.round(damage),
+        poise: a.poise,
+        knockback: a.knockback,
+        crit: this.strikeCrit,
+        fire: st.fireDamage,
+        burn: st.uniques.has('burn'),
+      };
     }
 
     if (t >= a.windup + a.swing && this.chainQueued) {
@@ -507,12 +538,12 @@ export class Player {
         this.fx.push({ pos: fxPos, amount: 0, target: 'player', result: 'parried', stagger: null });
         return 'parried';
       }
-      damage *= 1 - C.block.strength;
-      poise *= 1 - C.block.strength;
+      damage *= 1 - this.stats.blockStrength;
+      poise *= 1 - this.stats.blockStrength;
       result = 'blocked';
     }
     if (this.state === 'stagger') damage *= C.staggeredDamageBonus;
-    damage = Math.round(damage);
+    damage = Math.round(damage * (1 - this.stats.armourReduction));
     this.hp -= damage;
     const stagger = this.poise.apply(poise);
     this.fx.push({ pos: fxPos, amount: damage, target: 'player', result, stagger: stagger?.kind ?? null });
@@ -537,6 +568,31 @@ export class Player {
       this.vel.z += away.z * push;
     }
     return result;
+  }
+
+  /** Combo step timings, shortened by attack speed. */
+  attackTimes(): (typeof C.combo)[number] {
+    const a = C.combo[this.comboIndex];
+    const k = 1 / this.stats.attackSpeed;
+    return { ...a, windup: a.windup * k, swing: a.swing * k, recover: a.recover * k };
+  }
+
+  private rollCost(extra: number): number {
+    return this.stats.uniques.has('freeRoll') ? 0 : T.stamina.roll + extra;
+  }
+
+  /** Recompute stats from gear if the equipment changed. Keeps HP/stamina within the new maximums. */
+  refreshStats(): void {
+    if (this.statsVersion === this.inv.version) return;
+    this.statsVersion = this.inv.version;
+    this.stats = this.inv.derive();
+    this.hp = Math.min(this.hp, this.stats.maxHp);
+    this.stamina = Math.min(this.stamina, this.stats.maxStamina);
+  }
+
+  heal(amount: number): void {
+    if (this.state === 'dead') return;
+    this.hp = Math.min(this.stats.maxHp, this.hp + amount);
   }
 
   private die(message: string): void {

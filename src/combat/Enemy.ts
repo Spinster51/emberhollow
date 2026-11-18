@@ -45,8 +45,17 @@ export class Enemy {
   private chargeDir = new THREE.Vector3();
   /** Seeded so tests are repeatable. */
   private rand = mulberry32(this.id * 7919);
+  /** Set on death; cleared once the loot has been dropped. */
+  lootPending = false;
+  /** Seconds of burning left (Emberfang). */
+  burnTime = 0;
+  private burnAcc = 0;
+  /** Burn ticks produce feedback here; drained by Enemies. */
+  readonly fx: CombatFx[] = [];
   /** Test hook: a frozen enemy skips its AI (it can still be hit). */
   frozen = false;
+  /** Damage taken by the last hit (after bonuses). */
+  lastDamage = 0;
   /** Seconds since the last hit taken (drives the HP bar). */
   sinceHit = 99;
 
@@ -74,10 +83,32 @@ export class Enemy {
     this.poise.reset();
     this.cooldown = 0;
     this.sinceHit = 99;
+    this.burnTime = 0;
     this.setState('idle');
+    this.lootPending = false;
+  }
+
+  /** Burning: one tick of damage per second. Works even while frozen (tests). */
+  updateBurn(dt: number): void {
+    if (this.burnTime <= 0 || !this.alive) return;
+    this.burnTime -= dt;
+    this.burnAcc += dt;
+    if (this.burnAcc >= 1) {
+      this.burnAcc -= 1;
+      const dmg = C.burn.dps;
+      this.hp -= dmg;
+      this.sinceHit = 0;
+      this.fx.push({ pos: this.centre(), amount: dmg, target: 'enemy', result: 'hit', stagger: null, dot: true });
+      if (this.hp <= 0) {
+        this.hp = 0;
+        this.vel.set(0, 0, 0);
+        this.setState('dead');
+      }
+    }
   }
 
   private setState(s: EnemyState): void {
+    if (s === 'dead' && this.state !== 'dead') this.lootPending = true;
     this.state = s;
     this.stateTime = 0;
     this.hitDone = false;
@@ -246,15 +277,16 @@ export class Enemy {
     return r;
   }
 
-  takeHit(hit: Hit, fx: CombatFx[]): HitResult {
+  takeHit(hit: Hit, fx: CombatFx[], crit = false): HitResult {
     if (!this.alive) return 'ignored';
     let damage = hit.damage;
     if (this.state === 'stagger') damage *= C.staggeredDamageBonus;
     damage = Math.round(damage);
+    this.lastDamage = Math.min(damage, this.hp);
     this.hp -= damage;
     this.sinceHit = 0;
     const st = this.poise.apply(hit.poise);
-    fx.push({ pos: this.centre(), amount: damage, target: 'enemy', result: 'hit', stagger: st?.kind ?? null });
+    fx.push({ pos: this.centre(), amount: damage, target: 'enemy', result: 'hit', stagger: st?.kind ?? null, crit });
 
     const away = this.pos.clone().sub(hit.from).setY(0);
     if (away.lengthSq() < 1e-6) away.set(0, 0, 1);

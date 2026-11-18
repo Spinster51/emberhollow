@@ -40,23 +40,39 @@ export class Enemies {
     return e;
   }
 
-  update(dt: number, player: Player): void {
-    for (const e of this.list) if (!e.frozen) e.update(dt, player);
+  update(dt: number, player: Player, fx: CombatFx[]): void {
+    for (const e of this.list) {
+      if (!e.frozen) e.update(dt, player);
+      e.updateBurn(dt);
+      fx.push(...e.fx);
+      e.fx.length = 0;
+    }
     this.separate(player);
     this.respawn(dt, player);
   }
 
-  /** Resolve a player sword strike against every enemy in the arc. Returns how many were hit. */
-  applyStrike(strike: Strike, player: Player, fx: CombatFx[]): number {
+  /** Enemies that died since the last call (by any cause); each is reported once. */
+  collectKills(): Enemy[] {
+    const out = this.list.filter((e) => e.lootPending);
+    for (const e of out) e.lootPending = false;
+    return out;
+  }
+
+  /** Resolve a player sword strike against every enemy in the arc. */
+  applyStrike(strike: Strike, player: Player, fx: CombatFx[]): { hits: number; dealt: number } {
     let hits = 0;
+    let dealt = 0;
     const f = player.facingVector();
     for (const e of this.list) {
       if (!e.alive) continue;
       if (!inArc(player.pos, f, e.pos, C.reach + e.stats.radius, C.arc)) continue;
-      e.takeHit({ damage: strike.damage, poise: strike.poise, knockback: strike.knockback, from: player.pos.clone() }, fx);
+      const damage = strike.damage + strike.fire;
+      e.takeHit({ damage, poise: strike.poise, knockback: strike.knockback, from: player.pos.clone() }, fx, strike.crit);
+      dealt += e.lastDamage;
+      if (strike.burn && e.alive) e.burnTime = TUNING.combat.burn.time;
       hits++;
     }
-    return hits;
+    return { hits, dealt };
   }
 
   /** Push overlapping bodies apart (enemy–enemy and enemy–player). */

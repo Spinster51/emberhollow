@@ -135,7 +135,16 @@ Each class: 4 active skills + a skill tree.
 - Re-roll one random affix.
 
 ### Inventory
-40-slot bag; 100-slot shared chest in town, usable by all characters.
+40-slot bag; 100-slot shared chest in your home base, usable by all characters.
+
+### Home base
+A house in town that the player owns. Agreed with the owner after milestone 2.
+- **Getting it:** an early town quest offers an empty house for gold. Expand it later with gold and materials (extra rooms, more display space).
+- **Storage chest:** the 100-slot chest shared by all characters.
+- **Gear display:** weapon wall-mounts and armour stands. Put an item on one to show it off; take it back any time. Displayed items stay yours and don't use bag space.
+- **Bed:** sleep to heal fully and set your respawn point (like a campfire).
+- **Furniture and decor:** buy furniture in town and place it freely in your rooms.
+- **Build order:** milestone 3 gets a test house on the test map with the chest and display racks. Milestone 5 moves it into town with the quest, expansions, bed and decor.
 
 ## 11. Combat
 Real-time action: attacks with wind-up / active / recovery, dodge-roll with invulnerability frames, block and parry, lock-on. Starting numbers below come from studying Veloren; tune in play-tests.
@@ -160,9 +169,9 @@ Light: a few townspeople, simple kill/collect quests, the glider quest, and a re
 ## 14. Build order (each milestone is playable)
 1. **Moving around:** third-person camera, terrain, walk/sprint/jump/dodge, climb and glide, stamina — in a test map.
 2. **Combat:** Warrior, lock-on, 3 meadow enemies, damage and death.
-3. **Loot:** drops, rarities, inventory, visible gear, the shared chest.
+3. **Loot:** drops, rarities, inventory, visible gear, the shared chest; test home base (chest + gear display).
 4. **Classes:** all 4 classes, skills, skill trees, attributes.
-5. **World:** full map, town, NPCs, quests, campfires, fast travel, saving.
+5. **World:** full map, town, NPCs, quests, campfires, fast travel, saving; home base in town (house quest, expansions, bed, furniture).
 6. **Dungeon:** puzzles and the 2-phase boss.
 7. **Crafting and polish:** crafting, sound, menus, graphics presets, balance, GitHub Pages deploy.
 

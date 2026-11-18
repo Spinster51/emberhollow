@@ -36,6 +36,8 @@ export class World {
   readonly boxes: Box[] = [];
   readonly group = new THREE.Group();
   readonly spawn = new THREE.Vector3(0, 0, 12);
+  /** Where the test home base stands (kept free of trees). */
+  readonly homeSite = new THREE.Vector3(12, 0, -4);
 
   constructor() {
     for (let iz = 0; iz < N; iz++) {
@@ -254,6 +256,19 @@ export class World {
     this.group.add(mesh);
   }
 
+  /** Add a solid block after construction (buildings). Every side is climbable, like other boxes. */
+  addSolid(box: Box, material: THREE.Material): THREE.Mesh {
+    this.boxes.push(box);
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(box.maxX - box.minX, box.maxY - box.minY, box.maxZ - box.minZ),
+      material,
+    );
+    m.position.set((box.minX + box.maxX) / 2, (box.minY + box.maxY) / 2, (box.minZ + box.maxZ) / 2);
+    m.castShadow = m.receiveShadow = true;
+    this.group.add(m);
+    return m;
+  }
+
   private buildBoxMeshes(): void {
     const mat = toonMaterial(0xa59a8c);
     const cap = toonMaterial(0x7d6e60);
@@ -288,6 +303,7 @@ export class World {
       const x = (rand() - 0.5) * (WORLD_LIMIT * 2 - 10);
       const z = (rand() - 0.5) * (WORLD_LIMIT * 2 - 10);
       if (Math.hypot(x - this.spawn.x, z - this.spawn.z) < 8) continue;
+      if (Math.hypot(x - this.homeSite.x, z - this.homeSite.z) < 11) continue;
       if (this.slopeAt(x, z) > 0.5) continue;
       if (this.groundAt(x, z, 1e9) - this.heightAt(x, z) > 0.1) continue; // not on boxes
       const y = this.heightAt(x, z);

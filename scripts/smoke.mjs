@@ -398,6 +398,229 @@ s = await run(() => {
 });
 check('enemy respawns at its camp after 60 s', s.dead && s.alive && s.hp === 30, `alive=${s.alive} hp=${s.hp}`);
 
+// ================================================================ loot and home base (milestone 3)
+await page.waitForFunction(() => window.items);
+await run(() => {
+  // Fresh character at the spawn with an empty bag; all enemies frozen at their camps.
+  window.fresh = () => {
+    const g = window.game;
+    window.arena('bandit', 30);
+    const inv = g.player.inv;
+    inv.bag.fill(null);
+    for (const k of Object.keys(inv.equipped)) inv.equipped[k] = null;
+    inv.equipped.weapon = window.items.makeItem('rustySword');
+    inv.gold = 0;
+    inv.changed();
+    for (const d of [...g.loot.drops]) g.loot.remove(d);
+    g.ui.close();
+    g.step(1);
+    return g;
+  };
+});
+
+// 20. Item generation: rarity odds, affix counts, legendary uniques.
+s = await run(() => {
+  const I = window.items;
+  let seed = 7;
+  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const counts = { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 0 };
+  let affixOk = true;
+  let uniqueOk = true;
+  for (let i = 0; i < 4000; i++) {
+    const it = I.rollItem(rand, 2);
+    counts[it.rarity]++;
+    if (it.affixes.length !== I.RARITY_INFO[it.rarity].affixes - (it.rarity === 'legendary' ? 1 : 0)) affixOk = false;
+    if ((it.rarity === 'legendary') !== !!it.unique) uniqueOk = false;
+  }
+  return { counts, affixOk, uniqueOk };
+});
+check('rarity odds ~60/25/10/4/1 %', Math.abs(s.counts.common / 4000 - 0.6) < 0.04 && s.counts.legendary > 15 && s.counts.legendary < 80, JSON.stringify(s.counts));
+check('affix count matches rarity; legendaries are uniques', s.affixOk && s.uniqueOk);
+
+// 21. Kills drop loot: gold flies to you, gear shows a beam.
+s = await run(() => {
+  const g = window.fresh();
+  const p = g.player;
+  const e = window.arena('bandit', 1.5);
+  let gear = 0;
+  let beams = 0;
+  for (let i = 0; i < 12; i++) {
+    e.reset();
+    e.pos.set(0, g.world.groundAt(0, 10.5, 1e9), 10.5);
+    e.takeHit({ damage: 999, poise: 0, knockback: 0, from: p.pos.clone() }, []);
+    g.step(2);
+    gear += g.loot.drops.filter((d) => d.kind === 'item').length;
+    beams += g.loot.drops.filter((d) => d.beam).length;
+    for (const d of g.loot.drops.filter((d) => d.kind === 'item')) g.loot.remove(d);
+    p.pos.set(0, g.world.groundAt(0, 10.5, 1e9), 10.5); // stand where it died
+    g.step(90);
+  }
+  return { gold: p.inv.gold, gear, beams, mats: p.inv.materials.cloth ?? 0, left: g.loot.drops.length };
+});
+check('kills drop gold that is collected by walking over it', s.gold >= 12 * 6 && s.left === 0, `gold=${s.gold} left=${s.left}`);
+check('bandits drop cloth and some gear (with beams)', s.mats > 3 && s.gear >= 2 && s.beams === s.gear, `cloth=${s.mats} gear=${s.gear} beams=${s.beams}`);
+
+// 22. Pick up gear with E; a full bag refuses.
+s = await run(() => {
+  const g = window.fresh();
+  const p = g.player;
+  const sword = window.items.makeItem('ironSword', 'rare', 1, [{ stat: 'crit', value: 0.04 }]);
+  g.loot.dropItem(sword, p.pos.clone().setZ(p.pos.z - 1));
+  g.step(60);
+  const label = g.focus?.label;
+  window.press('interact');
+  const picked = p.inv.bag.includes(sword) && g.loot.drops.length === 0;
+  for (let i = 0; i < 40; i++) p.inv.bag[i] ??= window.items.makeItem('cap');
+  const extra = window.items.makeItem('helm');
+  g.loot.dropItem(extra, p.pos.clone());
+  g.step(60);
+  g.step(1);
+  window.press('interact');
+  return { label, picked, refused: g.loot.drops.length === 1 && !p.inv.bag.includes(extra) };
+});
+check('E picks up gear into the bag', s.picked && /Pick up Deadly Iron Sword/.test(s.label ?? ''), s.label);
+check('a full bag leaves the item on the ground', s.refused);
+
+// 23. Equipping changes stats: weapon damage, armour, level requirement, visible gear.
+s = await run(() => {
+  const g = window.fresh();
+  const p = g.player;
+  const I = window.items;
+  p.inv.add(I.makeItem('ironSword'));
+  p.inv.add(I.makeItem('mail'));
+  p.inv.add(I.makeItem('helm'));
+  p.inv.add(I.makeItem('ironShield'));
+  const req = I.makeItem('greatsword');
+  req.req = 5;
+  p.inv.add(req);
+  for (const base of ['ironSword', 'mail', 'helm', 'ironShield']) p.inv.equip(p.inv.bag.findIndex((x) => x?.base === base), p.level);
+  const err = p.inv.equip(p.inv.bag.indexOf(req), p.level);
+  g.step(1, null, true);
+  const out = {
+    err,
+    dmg: p.stats.weaponDamage,
+    armour: p.stats.armour,
+    block: p.stats.blockStrength,
+    move: p.stats.moveSpeed,
+    helmet: g.model.headGear.children.length,
+    shield: g.model.shield.children.length,
+    hair: g.model.hair.visible,
+  };
+  // Strike a slime with the iron sword: 14 damage.
+  const e = window.arena('slime');
+  window.press('attack');
+  window.until({}, () => g.hitStop > 0, 30);
+  out.hit = 30 - e.hp;
+  // Armour: a 12-damage hit on 22 armour (mail 10 + helm 6 + shield 6) → 12 × (1 − 22/82) ≈ 9.
+  out.taken = (() => { const before = p.hp; p.takeHit({ damage: 12, poise: 0, knockback: 0, from: p.pos.clone().setX(p.pos.x + 3) }); return before - p.hp; })();
+  return out;
+});
+check('equipping a level-5 item at level 1 is refused', s.err === 'Requires level 5.', s.err);
+check('iron sword: 14 damage per first strike', s.dmg === 14 && s.hit === 14, `stat=${s.dmg} hit=${s.hit}`);
+check('armour and shield stats apply', s.armour === 22 && s.block === 0.6 && Math.abs(s.move - 0.97) < 1e-6 && s.taken === 9, `armour=${s.armour} block=${s.block} move=${s.move} taken=${s.taken}`);
+check('helmet and shield show on the character', s.helmet === 1 && s.shield === 1 && !s.hair, `helmet=${s.helmet} shield=${s.shield} hair=${s.hair}`);
+
+// 24. Legendary effects.
+s = await run(() => {
+  const g = window.fresh();
+  const p = g.player;
+  const I = window.items;
+  const out = {};
+  p.inv.equipped.boots = I.makeItem('boots', 'legendary', 1, [], 'driftstep');
+  p.inv.changed();
+  g.step(1);
+  window.press('dodge', { moveY: 1 });
+  out.rollCost = 100 - p.stamina;
+  window.fresh();
+  p.inv.equipped.ring = I.makeItem('copperRing', 'legendary', 1, [], 'thirstBand');
+  p.inv.equipped.weapon = I.makeItem('ironSword', 'legendary', 1, [], 'emberfang');
+  p.inv.changed();
+  g.step(1);
+  p.hp = 50;
+  const e = window.arena('bandit', 1.8);
+  p.hp = 50;
+  window.press('attack');
+  window.until({}, () => g.hitStop > 0, 30);
+  out.healed = p.hp - 50;
+  const afterHit = e.hp;
+  g.hitStop = 0;
+  g.step(130);
+  out.burned = afterHit - e.hp;
+  window.fresh();
+  p.inv.equipped.amulet = I.makeItem('boneCharm', 'legendary', 1, [], 'heartstone');
+  p.inv.changed();
+  g.step(1);
+  p.hp = 50;
+  g.step(60);
+  out.regen = p.hp - 50;
+  return out;
+});
+check('Driftstep Boots: free dodge-rolls', s.rollCost === 0, `cost=${s.rollCost}`);
+check('Band of Thirst heals 8% of damage dealt', s.healed > 0.9 && s.healed < 1.5, `healed=${s.healed.toFixed(2)}`);
+check('Emberfang burns for 4/s', s.burned === 8, `burn=${s.burned}`);
+check('Heartstone regenerates 2 HP/s', Math.abs(s.regen - 2) < 0.05, `regen=${s.regen.toFixed(2)}`);
+
+// 25. Inventory screen and tooltips.
+s = await run(() => {
+  const g = window.fresh();
+  const I = window.items;
+  const it = I.makeItem('ironSword', 'epic', 2, [{ stat: 'str', value: 3 }, { stat: 'hp', value: 12 }, { stat: 'crit', value: 0.03 }]);
+  g.player.inv.add(it);
+  g.ui.open({ kind: 'bag' });
+  g.step(1, null, true);
+  const cells = document.querySelectorAll('.inv .inv-cell').length;
+  const menu = g.menuOpen;
+  const tip = window.items.tooltipHtml(it, g.player.inv.equipped.weapon, 1);
+  g.ui.close();
+  return { cells, menu, tip, closed: !g.menuOpen };
+});
+check('inventory screen shows 8 equipment + 40 bag slots', s.cells === 48 && s.menu && s.closed, `cells=${s.cells}`);
+check('tooltip compares with the equipped item', /↑ 3 damage/.test(s.tip) && /↑ 3 Strength/.test(s.tip) && /Compared with Rusty Sword/.test(s.tip), s.tip.replace(/<[^>]+>/g, ' ').slice(0, 160));
+
+// 26. Home base: walk in through the door, use the chest and the display racks.
+s = await run(() => {
+  const g = window.fresh();
+  const p = g.player;
+  const h = g.home;
+  const out = {};
+  // Walk in from outside the door (door faces +z).
+  p.pos.copy(h.door).setY(g.world.groundAt(h.door.x, h.door.z, 1e9));
+  p.state = 'ground';
+  g.cam.yaw = 0;
+  window.until({ moveY: 1 }, () => p.pos.z < g.world.homeSite.z, 240);
+  out.inside = p.pos.z < g.world.homeSite.z && Math.abs(p.pos.y - h.floorY) < 0.05 && p.state === 'ground';
+  // Chest.
+  p.pos.set(h.chestPos.x, h.floorY, h.chestPos.z + 1.1);
+  g.step(1);
+  out.chestLabel = g.focus?.label;
+  window.press('interact');
+  out.mode = g.ui.modeKind;
+  const it = window.items.makeItem('gauntlets', 'uncommon', 1, [{ stat: 'vit', value: 2 }]);
+  p.inv.add(it);
+  const slot = p.inv.bag.indexOf(it);
+  out.stored = g.ui.storeInChest(h.chest, slot) && h.chest.includes(it) && !p.inv.bag.includes(it);
+  out.back = g.ui.takeFromChest(h.chest, h.chest.indexOf(it)) && p.inv.bag.includes(it);
+  g.ui.close();
+  // Display the iron sword on a weapon mount, and gauntlets on an armour stand.
+  const sword = window.items.makeItem('ironSword', 'rare');
+  p.inv.add(sword);
+  const mount = h.spots.find((x) => x.kind === 'mount');
+  const stand = h.spots.find((x) => x.kind === 'stand');
+  p.pos.set(mount.pos.x, h.floorY, mount.pos.z + 0.9);
+  g.step(1);
+  out.mountLabel = g.focus?.label;
+  out.wrongSlot = g.ui.display(mount, p.inv.bag.indexOf(it)); // gauntlets do not go on a weapon mount
+  out.shown = g.ui.display(mount, p.inv.bag.indexOf(sword)) && mount.item === sword && mount.holder.children.length === 1 && !p.inv.bag.includes(sword);
+  out.stand = g.ui.display(stand, p.inv.bag.indexOf(it)) && stand.holder.children.length === 1;
+  out.taken = g.ui.takeFromDisplay(mount) && p.inv.bag.includes(sword) && mount.holder.children.length === 0;
+  return out;
+});
+check('walk into the house through the door', s.inside);
+check('E at the chest opens the storage chest', s.chestLabel === 'Open storage chest' && s.mode === 'chest', `${s.chestLabel} / ${s.mode}`);
+check('items move between bag and chest', s.stored && s.back);
+check('weapon mount shows a weapon; refuses gauntlets', s.shown && s.wrongSlot === false && /Weapon mount/.test(s.mountLabel ?? ''), s.mountLabel);
+check('armour stand shows armour; items can be taken back', s.stand && s.taken);
+
 if (shotsDir) {
   await run(() => {
     const g = window.game;
@@ -428,6 +651,79 @@ if (shotsDir) {
     g.step(50);
   });
   await shot('07-boars');
+
+  // Loot beams of every rarity, wearing a full set.
+  await run(() => {
+    const g = window.fresh();
+    for (const e of g.enemies.list) e.frozen = true;
+    const I = window.items;
+    const p = g.player;
+    const inv = p.inv;
+    inv.equipped.weapon = I.makeItem('ironSword', 'epic', 2, [{ stat: 'str', value: 3 }]);
+    inv.equipped.offhand = I.makeItem('ironShield', 'rare');
+    inv.equipped.helmet = I.makeItem('helm', 'uncommon');
+    inv.equipped.chest = I.makeItem('mail', 'rare');
+    inv.changed();
+    window.place(0, 12, 0.5);
+    g.cam.pitch = 0.3;
+    const rar = ['common', 'uncommon', 'rare', 'epic', 'legendary'];
+    rar.forEach((r, i) => g.loot.dropItem(I.rollItem(Math.random, 2, r), p.pos.clone().set(-4 + i * 2, p.pos.y, 6)));
+    g.step(80);
+  });
+  await shot('08-loot');
+
+  // Inventory with a tooltip.
+  await run(() => {
+    const g = window.game;
+    const I = window.items;
+    const inv = g.player.inv;
+    inv.add(I.makeItem('greatsword', 'legendary', 3, [{ stat: 'str', value: 3 }, { stat: 'crit', value: 0.04 }]));
+    inv.add(I.makeItem('ironSword', 'legendary', 3, [{ stat: 'dex', value: 2 }, { stat: 'hp', value: 14 }, { stat: 'attackSpeed', value: 0.06 }], 'emberfang'));
+    for (let i = 0; i < 9; i++) inv.add(I.rollItem(Math.random, 2));
+    inv.gold = 137;
+    inv.materials.gel = 4;
+    inv.materials.cloth = 2;
+    g.ui.open({ kind: 'bag' });
+    g.step(1);
+  });
+  await page.hover('.inv-grid.bag .inv-cell:nth-child(2)');
+  await shot('09-inventory');
+  await run(() => window.game.ui.close());
+
+  // Home base: outside, then inside with gear on display.
+  await run(() => {
+    const g = window.game;
+    const h = g.home;
+    const I = window.items;
+    const [m1, m2, m3] = h.spots.filter((s) => s.kind === 'mount');
+    const [s1, s2] = h.spots.filter((s) => s.kind === 'stand');
+    const put = (spot, item) => { spot.item = item; spot.onChange(); };
+    put(m1, I.makeItem('greatsword', 'epic'));
+    put(m2, I.makeItem('ironShield', 'rare'));
+    put(m3, I.makeItem('ironSword', 'legendary', 3, [], 'emberfang'));
+    put(s1, I.makeItem('mail', 'rare'));
+    put(s2, I.makeItem('helm', 'uncommon'));
+    put(h.spots.find((s) => s.kind === 'table'), I.makeItem('copperRing', 'legendary', 1, [], 'thirstBand'));
+    const p = g.player;
+    p.pos.set(h.door.x - 3, 0, h.door.z + 7);
+    p.pos.y = g.world.groundAt(p.pos.x, p.pos.z, 1e9);
+    g.cam.yaw = 0.35;
+    g.cam.pitch = 0.25;
+    g.step(5);
+  });
+  await shot('10-house');
+  await run(() => {
+    const g = window.game;
+    const h = g.home;
+    const p = g.player;
+    p.pos.set(g.world.homeSite.x - 0.5, h.floorY, g.world.homeSite.z + 0.5);
+    p.facing = 0.3;
+    g.cam.yaw = 0.3;
+    g.cam.pitch = 0.3;
+    g.cam.distance = 5;
+    for (let i = 0; i < 30; i++) g.step(1, null, true);
+  });
+  await shot('11-house-inside');
 }
 
 check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));

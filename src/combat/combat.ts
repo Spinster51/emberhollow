@@ -27,6 +27,9 @@ export interface CombatFx {
   target: 'player' | 'enemy';
   result: HitResult;
   stagger: StaggerKind | null;
+  crit?: boolean;
+  /** Damage-over-time tick (burn). */
+  dot?: boolean;
 }
 
 const STAGGERS = TUNING.combat.staggers as { below: number; kind: StaggerKind; time: number }[];

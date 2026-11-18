@@ -38,6 +38,8 @@ export class Input {
   /** Positive = forward. */
   moveY = 0;
   pointerLocked = false;
+  /** Menus open: report no movement or actions. */
+  suppressed = false;
 
   constructor(canvas: HTMLCanvasElement) {
     window.addEventListener('keydown', (e) => {
@@ -49,7 +51,7 @@ export class Input {
     // The first click only captures the mouse; once captured, buttons are game actions.
     canvas.addEventListener('mousedown', (e) => {
       if (!this.pointerLocked) {
-        canvas.requestPointerLock?.();
+        if (!this.suppressed) canvas.requestPointerLock?.();
         return;
       }
       e.preventDefault();
@@ -85,7 +87,9 @@ export class Input {
     let mx = 0;
     let my = 0;
 
-    if (this.virtual) {
+    if (this.suppressed && !this.virtual) {
+      // Nothing held while a menu is open.
+    } else if (this.virtual) {
       mx = this.virtual.moveX ?? 0;
       my = this.virtual.moveY ?? 0;
       for (const a of this.virtual.held ?? []) this.held.add(a);

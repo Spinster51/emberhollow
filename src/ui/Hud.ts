@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { TUNING } from '../config';
 import type { Player } from '../player/Player';
 import type { Enemy } from '../combat/Enemy';
 import type { CombatFx } from '../combat/combat';
+import type { Interactable } from '../loot/Loot';
 
 const HELP = `WASD  move        Mouse  look / scroll zoom
 Space jump · climb-jump · open/close glider
@@ -11,6 +11,7 @@ Shift tap: dodge-roll · hold: sprint
 Left click: attack (click again mid-swing = combo)
 Right click: block (block just in time = parry)
 Tab / middle click: lock-on · flick mouse to switch
+E pick up / use · I inventory
 Walk into a wall to climb · H hide help`;
 
 interface FloatText {
@@ -36,6 +37,10 @@ export class Hud {
   private floats: FloatText[] = [];
   private bars = new Map<Enemy, HTMLDivElement>();
   private reticle: HTMLDivElement;
+  private interact: HTMLDivElement;
+  private feedBox: HTMLDivElement;
+  private feedItems: { el: HTMLDivElement; age: number }[] = [];
+  private goldText: HTMLDivElement;
 
   constructor(
     root: HTMLElement,
@@ -44,7 +49,10 @@ export class Hud {
   ) {
     this.root = root;
     root.innerHTML = `
-      <div class="panel hp"><span>HP <span id="hp-text"></span></span><div class="bar"><div id="hp-fill"></div></div></div>
+      <div class="panel hp"><span>HP <span id="hp-text"></span></span><div class="bar"><div id="hp-fill"></div></div>
+        <div class="gold" id="gold"></div></div>
+      <div class="interact" id="interact"></div>
+      <div class="feed" id="feed"></div>
       <div class="panel debug" id="debug"></div>
       <div class="panel help" id="help"></div>
       <div class="panel settings">Pixel size
@@ -66,6 +74,9 @@ export class Hud {
     this.wheelArc = root.querySelector('#wheel-arc')!;
     this.prompt = root.querySelector('#prompt')!;
     this.toast = root.querySelector('#toast')!;
+    this.interact = root.querySelector('#interact')!;
+    this.feedBox = root.querySelector('#feed')!;
+    this.goldText = root.querySelector('#gold')!;
     this.reticle = document.createElement('div');
     this.reticle.className = 'reticle';
     root.appendChild(this.reticle);
@@ -91,8 +102,8 @@ export class Hud {
 
   update(p: Player, camera: THREE.Camera, dt: number, locked: boolean): void {
     this.fps += (1 / Math.max(dt, 1e-4) - this.fps) * 0.05;
-    this.hpFill.style.width = `${Math.max(0, (p.hp / TUNING.maxHp) * 100)}%`;
-    this.hpText.textContent = `${Math.max(0, Math.round(p.hp))} / ${TUNING.maxHp}`;
+    this.hpFill.style.width = `${Math.max(0, (p.hp / p.stats.maxHp) * 100)}%`;
+    this.hpText.textContent = `${Math.max(0, Math.round(p.hp))} / ${p.stats.maxHp}`;
     this.debug.textContent =
       `fps   ${this.fps.toFixed(0)}\n` +
       `state ${p.state}\n` +
@@ -103,12 +114,12 @@ export class Hud {
       (p.blocking ? '\nblocking' : '');
 
     // Stamina wheel beside the player; hidden when full.
-    const full = p.stamina >= TUNING.stamina.max - 0.01 && !p.exhausted;
+    const full = p.stamina >= p.stats.maxStamina - 0.01 && !p.exhausted;
     const sp = p.pos.clone().add(new THREE.Vector3(0, 1.4, 0)).project(camera);
     this.wheel.style.left = `${(sp.x * 0.5 + 0.5) * window.innerWidth + 46}px`;
     this.wheel.style.top = `${(-sp.y * 0.5 + 0.5) * window.innerHeight}px`;
     this.wheel.style.opacity = full ? '0' : '1';
-    const frac = p.stamina / TUNING.stamina.max;
+    const frac = p.stamina / p.stats.maxStamina;
     this.wheelArc.setAttribute('stroke-dashoffset', String(87.96 * (1 - frac)));
     this.wheelArc.setAttribute('stroke', p.exhausted ? '#e0503f' : frac < 0.3 ? '#f0c040' : '#7be06b');
 
@@ -121,6 +132,37 @@ export class Hud {
     }
     this.toastTime -= dt;
     this.toast.style.opacity = this.toastTime > 0 ? '1' : '0';
+  }
+
+  /** Interaction prompt, pick-up feed and gold. */
+  updateLoot(focus: Interactable | null, feed: [string, string][], gold: number, dt: number): void {
+    if (focus) {
+      this.interact.style.display = '';
+      this.interact.innerHTML = '<b>E</b>';
+      const span = document.createElement('span');
+      span.textContent = focus.label;
+      span.style.color = focus.color ?? '#f4ecd8';
+      this.interact.appendChild(span);
+    } else {
+      this.interact.style.display = 'none';
+    }
+    for (const [text, color] of feed) {
+      const el = document.createElement('div');
+      el.textContent = text;
+      el.style.color = color;
+      this.feedBox.appendChild(el);
+      this.feedItems.push({ el, age: 0 });
+    }
+    this.feedItems = this.feedItems.filter((f) => {
+      f.age += dt;
+      f.el.style.opacity = f.age > 3 ? '0' : '1';
+      if (f.age > 3.7) {
+        f.el.remove();
+        return false;
+      }
+      return true;
+    });
+    this.goldText.textContent = `Gold ${gold}`;
   }
 
   /** Floating damage numbers, enemy health bars and the lock-on reticle. */
@@ -139,7 +181,9 @@ export class Hud {
       if (f.result === 'dodged') (text = 'dodge'), (cls += ' note');
       else if (f.result === 'parried') (text = 'PARRY!'), (cls += ' big');
       else if (f.result === 'blocked') text = `${text} blocked`;
-      if (f.stagger && f.target === 'enemy') cls += ' big';
+      if ((f.stagger || f.crit) && f.target === 'enemy') cls += ' big';
+      if (f.crit) text += '!';
+      if (f.dot) cls += ' note';
       if (f.stagger) text += ` ${f.stagger}`;
       el.className = cls;
       el.textContent = text;

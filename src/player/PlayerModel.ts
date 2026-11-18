@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { addOutline, toonMaterial } from '../core/toon';
 import type { Player } from './Player';
-import { TUNING } from '../config';
+import { buildItemMesh } from '../items/ItemMesh';
 
 /**
  * Placeholder blocky adventurer with procedural animation. Replaced by the rigged
@@ -16,7 +16,13 @@ export class PlayerModel {
   private legL = new THREE.Group();
   private legR = new THREE.Group();
   private glider = new THREE.Group();
+  /** Gear holders, filled from the equipped items. */
   private sword = new THREE.Group();
+  private shield = new THREE.Group();
+  private headGear = new THREE.Group();
+  private chestGear = new THREE.Group();
+  private hair: THREE.Mesh;
+  private gearVersion = -1;
   private phase = 0;
   private gliderOpen = 0;
 
@@ -50,6 +56,12 @@ export class PlayerModel {
     const hairM = box(0.46, 0.16, 0.46, hair, false);
     hairM.position.y = 0.2;
     this.head.add(hairM);
+    this.hair = hairM;
+    this.headGear.position.y = 0.17;
+    this.head.add(this.headGear);
+    this.chestGear.position.y = 0.2;
+    this.chestGear.scale.set(0.98, 0.98, 0.98);
+    this.body.add(this.chestGear);
     const eyeMat = new THREE.MeshBasicMaterial({ color: 0x1a1010 });
     for (const x of [-0.1, 0.1]) {
       const eye = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.08, 0.02), eyeMat);
@@ -69,16 +81,13 @@ export class PlayerModel {
     limb(this.legL, -0.14, -0.12, 0.8, 0.2, pants);
     limb(this.legR, 0.14, -0.12, 0.8, 0.2, pants);
 
-    // Sword in the right hand, pointing forward along the forearm.
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 1.0), toonMaterial(0xdfe6ee));
-    blade.castShadow = true;
-    addOutline(blade, 0.03);
-    blade.position.z = -0.6;
-    const guard = box(0.3, 0.07, 0.07, toonMaterial(0xc9a13b), false);
-    guard.position.z = -0.08;
-    this.sword.add(blade, guard);
+    // Weapon in the right hand, pointing forward; shield on the outside of the left forearm.
     this.sword.position.y = -0.58;
     this.armR.add(this.sword);
+    this.shield.position.set(-0.13, -0.38, 0);
+    this.shield.rotation.y = Math.PI / 2;
+    this.shield.scale.setScalar(0.85);
+    this.armL.add(this.shield);
 
     // Glider: a cloth wing on two poles, held above the head.
     const cloth = new THREE.Mesh(
@@ -102,7 +111,24 @@ export class PlayerModel {
     this.body.add(this.glider);
   }
 
+  /** Show the equipped weapon, off-hand, helmet and chest piece. */
+  private refreshGear(p: Player): void {
+    if (this.gearVersion === p.inv.version) return;
+    this.gearVersion = p.inv.version;
+    const eq = p.inv.equipped;
+    const fill = (holder: THREE.Group, item: typeof eq.weapon) => {
+      holder.clear();
+      if (item) holder.add(buildItemMesh(item));
+    };
+    fill(this.sword, eq.weapon);
+    fill(this.shield, eq.offhand);
+    fill(this.headGear, eq.helmet);
+    fill(this.chestGear, eq.chest);
+    this.hair.visible = !eq.helmet;
+  }
+
   update(p: Player, dt: number): void {
+    this.refreshGear(p);
     this.root.position.copy(p.pos);
     this.root.rotation.set(0, p.facing, 0);
     this.body.rotation.set(0, 0, 0);
@@ -179,7 +205,7 @@ export class PlayerModel {
       }
       case 'attack': {
         // Wind up (arm back) → swing across → recover. Strikes alternate sides; the 3rd is overhead.
-        const a = TUNING.combat.combo[p.comboIndex];
+        const a = p.attackTimes();
         const st = p.stateTime;
         const side = p.comboIndex === 1 ? -1 : 1;
         let k = 0;

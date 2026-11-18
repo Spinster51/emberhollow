@@ -108,6 +108,47 @@ body {
   transition: opacity 0.5s;
 }
 
+/* ---- loot ---- */
+
+.interact {
+  position: absolute;
+  top: 62%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 16px;
+  text-shadow: 2px 2px 0 #000;
+}
+
+.interact b {
+  display: inline-block;
+  padding: 0 6px;
+  margin-right: 6px;
+  border: 2px solid #f4ecd8;
+  border-radius: 4px;
+  color: #f4ecd8;
+}
+
+.feed {
+  position: absolute;
+  right: 14px;
+  bottom: 70px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-size: 14px;
+  text-shadow: 1px 1px 0 #000;
+}
+
+.feed div {
+  transition: opacity 0.6s;
+}
+
+.gold {
+  margin-top: 6px;
+  color: #f2c341;
+}
+
 /* ---- combat ---- */
 
 .dmg {
@@ -156,4 +197,208 @@ body {
   transform: translate(-50%, -50%) rotate(45deg);
   border: 3px solid #ffd27a;
   box-shadow: 0 0 0 2px #000;
+}
+
+/* ---- inventory ---- */
+
+.inv {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  background: rgba(20, 15, 11, 0.94);
+  border: 3px solid #6b4a2b;
+  border-radius: 8px;
+  padding: 12px 14px;
+  pointer-events: auto;
+  font-size: 13px;
+  text-shadow: 1px 1px 0 #000;
+}
+
+.inv-head {
+  font-size: 18px;
+  color: #ffd27a;
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+}
+
+.inv-close {
+  font-size: 13px;
+  color: #c8b89a;
+  cursor: pointer;
+}
+
+.inv-body {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.inv-sub {
+  color: #c8b89a;
+  margin-bottom: 4px;
+}
+
+.inv-grid {
+  display: grid;
+  gap: 4px;
+}
+
+.inv-grid.equip {
+  grid-template-columns: repeat(2, 64px);
+}
+
+.inv-grid.bag {
+  grid-template-columns: repeat(8, 44px);
+}
+
+.inv-grid.chest {
+  grid-template-columns: repeat(10, 34px);
+}
+
+.inv-grid.equip .inv-cell {
+  width: 64px;
+}
+
+.inv-cell {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  box-sizing: border-box;
+  border: 2px solid #3d2c1e;
+  border-radius: 4px;
+  background: #1a130e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.inv-grid.chest .inv-cell {
+  width: 34px;
+  height: 34px;
+  font-size: 9px;
+}
+
+.inv-cell small {
+  position: absolute;
+  bottom: 1px;
+  right: 3px;
+  font-size: 9px;
+  font-weight: normal;
+  color: #9c8a6c;
+}
+
+.inv-cell:not(:has(span)) small {
+  position: static;
+}
+
+.inv-cell:hover {
+  background: #2c2016;
+}
+
+.inv-cell.dim {
+  opacity: 0.3;
+}
+
+.inv-cell.big {
+  width: 90px;
+  height: 90px;
+  font-size: 18px;
+}
+
+.inv-stats {
+  margin-top: 10px;
+  width: 132px;
+  font-size: 11px;
+}
+
+.inv-stats div {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.inv-stats span {
+  color: #9c8a6c;
+}
+
+.inv-note {
+  margin-top: 6px;
+  color: #9c8a6c;
+  width: 120px;
+}
+
+.inv-foot {
+  margin-top: 10px;
+  color: #c8b89a;
+  line-height: 1.6;
+}
+
+.inv-foot i {
+  color: #8a7a60;
+}
+
+.tip {
+  position: fixed;
+  z-index: 10;
+  max-width: 280px;
+  background: rgba(10, 8, 6, 0.96);
+  border: 2px solid #6b4a2b;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  pointer-events: none;
+  text-shadow: 1px 1px 0 #000;
+}
+
+.tip-name {
+  font-size: 15px;
+  font-weight: bold;
+}
+
+.tip-sub {
+  color: #9c8a6c;
+  font-size: 12px;
+}
+
+.tip-implicit {
+  color: #f4ecd8;
+}
+
+.tip-affix {
+  color: #8ab4ff;
+}
+
+.tip-unique {
+  color: #ff9a2e;
+  font-style: italic;
+}
+
+.tip-bad {
+  color: #ff6b5a;
+}
+
+.tip-cmp {
+  margin-top: 6px;
+  border-top: 1px solid #3d2c1e;
+  padding-top: 4px;
+  color: #c8b89a;
+  font-size: 12px;
+}
+
+.tip-up {
+  color: #7be06b;
+}
+
+.tip-down {
+  color: #ff6b5a;
 }

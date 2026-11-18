@@ -18,6 +18,10 @@ Browser 3D action RPG (Three.js + TypeScript + Vite). Owner play-tests; Claude w
 - `src/player/Player.ts` — state machine: ground / air / roll / climb / climbJump / mantle / glide / attack / stagger / dead; stamina; fall damage; 3-hit combo with input buffer; block/parry; `takeHit`.
 - `src/combat/` — `combat.ts` (Hit, Poise + stagger thresholds, `inArc`), `Enemy.ts` (AI state machine: idle/chase/windup/active/recover/stagger/return/dead), `EnemyModel.ts` (blocky slime/boar/bandit), `Enemies.ts` (camps, strikes, separation, respawn), `LockOn.ts` (target pick + flick switch).
 - `src/player/PlayerModel.ts` — placeholder blocky model with procedural poses (real Quaternius models come later).
+- `src/items/` — `items.ts` (slots, rarities, bases, affixes, legendary uniques, `rollItem`, `itemStats`), `Inventory.ts` (40-slot bag, equipment, gold, materials, `derive()` → player stats), `ItemMesh.ts` (3D item models with rarity glow).
+- `src/loot/Loot.ts` — drops from kills (loot tables in `TUNING.enemies.loot`), rarity beams, gold/material auto-pickup, `Interactable` (E prompts).
+- `src/home/Home.ts` — test home base at `world.homeSite`: house, 100-slot shared chest, weapon mounts, armour stands, trinket table.
+- `src/ui/InventoryUI.ts` — I menu (equipment + bag + stats), chest and display-rack modes, comparison tooltips. `game.menuOpen` suppresses game input.
 - `src/camera/ThirdPersonCamera.ts` — orbit camera with wall pull-in; lock-on follow + shoulder offset; trauma shake.
 - `src/ui/Hud.ts` — HP, stamina wheel, debug, pixel-size slider, toasts; damage numbers, enemy HP bars, lock-on reticle.
 
@@ -30,10 +34,13 @@ Browser 3D action RPG (Three.js + TypeScript + Vite). Owner play-tests; Claude w
 
 ## Status
 - Milestone 1 (movement) — done.
-- Milestone 2 (combat) — done: Warrior combo, block/parry, poise/stagger, lock-on, slime/boar/bandit, death/respawn, enemy respawn. 47/47 smoke checks. Awaiting owner play-test for feel tuning.
-- Next: milestone 3 — loot (drops, rarities, inventory, visible gear, shared chest).
+- Milestone 2 (combat) — done.
+- Milestone 3 (loot + test home base) — done: 5 rarities, 15 bases, 14 affixes, 4 legendary uniques, drops with beams, inventory with compare tooltips, visible weapon/off-hand/helmet/chest, test house with shared chest and gear display. 67/67 smoke checks.
+- Next: milestone 4 — classes (all 4), skills, skill trees, attributes, levelling (player.level is fixed at 1 until then).
 
 ## Decisions log
 - Skills: only project-relevant ones kept, stored in `.claude/skills/` (see its README for the list and sources). Other-engine and unrelated skills removed.
 - Combat (M2): parry also interrupts the attacking enemy (cancels its follow-up); death drops no gold yet (gold arrives with loot in M3); campfire respawn = world spawn point until campfires exist (M5). Tests freeze enemies via `enemy.frozen`.
+- Home base (agreed after M2): bought in town via an early quest, expandable; shared chest, gear display racks, bed, furniture. M3 = test house (chest + racks); M5 = town house, quest, expansions, bed, decor. See DESIGN.md §10 "Home base".
+- Loot (M3): no saving yet (bag, chest and displays reset on reload until M5 saves); item icons are text labels until an icon pass; attributes give a first-pass effect (Str dmg/armour, Dex crit/speed, Vit HP/stamina) to be revisited in M4; greatsword is not two-handed yet.
 - Graphiti memory MCP: skipped (cloud container can't reach a hosted graph DB). This file is the project memory instead — keep Status and Decisions up to date.

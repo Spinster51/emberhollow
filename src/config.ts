@@ -53,12 +53,19 @@ export const TUNING = {
   combat: {
     /** Presses are remembered this long so an early tap still fires. */
     buffer: 0.2,
-    /** Warrior sword combo. `hitAt` = fraction of the swing when the hit lands. */
+    /**
+     * Warrior sword combo. `hitAt` = fraction of the swing when the hit lands; `mult` scales the
+     * weapon's damage. Times are divided by attack speed.
+     */
     combo: [
-      { windup: 0.15, swing: 0.15, recover: 0.3, hitAt: 0.5, damage: 12, poise: 10, stamina: 6, lunge: 3, knockback: 2 },
-      { windup: 0.12, swing: 0.15, recover: 0.3, hitAt: 0.5, damage: 14, poise: 12, stamina: 6, lunge: 3, knockback: 2 },
-      { windup: 0.25, swing: 0.2, recover: 0.45, hitAt: 0.5, damage: 22, poise: 25, stamina: 10, lunge: 5, knockback: 6 },
+      { windup: 0.15, swing: 0.15, recover: 0.3, hitAt: 0.5, mult: 1.0, poise: 10, stamina: 6, lunge: 3, knockback: 2 },
+      { windup: 0.12, swing: 0.15, recover: 0.3, hitAt: 0.5, mult: 1.15, poise: 12, stamina: 6, lunge: 3, knockback: 2 },
+      { windup: 0.25, swing: 0.2, recover: 0.45, hitAt: 0.5, mult: 1.8, poise: 25, stamina: 10, lunge: 5, knockback: 6 },
     ],
+    /** Fire damage over time from the Emberfang legendary. */
+    burn: { dps: 4, time: 3 },
+    lifesteal: 0.08,
+    regen: 2,
     reach: 2.4,
     /** Total arc of a sword swing, degrees. */
     arc: 120,
@@ -81,6 +88,15 @@ export const TUNING = {
   },
 
   enemies: {
+    /**
+     * Loot per kill: gold range, chance of a piece of gear, the family's crafting material.
+     * `level` sets item level (meadow 1–3).
+     */
+    loot: {
+      slime: { level: 1, gold: [1, 4], gear: 0.15, material: 'gel', materialChance: 0.7 },
+      boar: { level: 2, gold: [3, 8], gear: 0.3, material: 'hide', materialChance: 0.7 },
+      bandit: { level: 3, gold: [6, 15], gear: 0.45, material: 'cloth', materialChance: 0.6 },
+    },
     respawnTime: 60,
     /** Camps respawn only when the player is at least this far away. */
     respawnDistance: 35,

@@ -9,6 +9,9 @@ import { Enemies } from './combat/Enemies';
 import { LockOn } from './combat/LockOn';
 import type { CombatFx } from './combat/combat';
 import { TUNING } from './config';
+import { Loot, type Interactable } from './loot/Loot';
+import { InventoryUI } from './ui/InventoryUI';
+import { Home } from './home/Home';
 
 const STEP = 1 / 60;
 const PIXEL_KEY = 'emberhollow.pixelScale';
@@ -39,6 +42,15 @@ export class Game {
   readonly fx: CombatFx[] = [];
   /** Remaining frames of hit-stop (the whole simulation freezes briefly on a hit). */
   hitStop = 0;
+  readonly loot: Loot;
+  /** The thing E would use right now (nearest in reach), if any. */
+  focus: Interactable | null = null;
+  /** Extra sources of interactables (the home base). */
+  readonly interactSources: (() => Interactable[])[] = [];
+  /** While a menu is open the world keeps running but ignores game input. */
+  menuOpen = false;
+  readonly ui: InventoryUI;
+  readonly home: Home;
   private sun: THREE.DirectionalLight;
   private accumulator = 0;
   private last = performance.now();
@@ -74,8 +86,21 @@ export class Game {
     this.scene.add(this.model.root);
     this.enemies = new Enemies(this.world);
     this.scene.add(this.enemies.group);
+    this.loot = new Loot(this.world);
+    this.scene.add(this.loot.group);
     this.cam = new ThirdPersonCamera(this.camera, this.world);
     this.hud = new Hud(hudRoot, (s) => this.setPixelScale(s), this.pixelScale);
+    this.ui = new InventoryUI(
+      hudRoot,
+      this.player.inv,
+      () => this.player.level,
+      (open) => (this.menuOpen = open),
+      (item) => this.loot.dropItem(item, this.player.pos),
+      (msg) => this.player.events.push(msg),
+    );
+    this.home = new Home(this.world, this.ui);
+    this.scene.add(this.home.group);
+    this.interactSources.push(() => this.home.interactables(this.player.pos));
 
     window.addEventListener('resize', () => this.resize());
     this.resize();
@@ -122,6 +147,7 @@ export class Game {
   }
 
   private simulate(): void {
+    this.input.suppressed = this.menuOpen;
     this.input.update();
     const p = this.player;
     if (this.hitStop > 0) {
@@ -139,14 +165,22 @@ export class Game {
 
     p.update(STEP, this.input, this.cam.yaw, target ? target.pos : null);
     if (p.strike) {
-      const hits = this.enemies.applyStrike(p.strike, p, this.fx);
+      const { hits, dealt } = this.enemies.applyStrike(p.strike, p, this.fx);
+      if (p.stats.uniques.has('lifesteal')) p.heal(dealt * TUNING.combat.lifesteal);
       if (hits > 0) {
         const heavy = p.strike.index === TUNING.combat.combo.length - 1;
         this.hitStop = heavy ? TUNING.combat.hitStop.heavy : TUNING.combat.hitStop.light;
         this.cam.addTrauma(heavy ? 0.35 : 0.2);
       }
     }
-    this.enemies.update(STEP, p);
+    this.enemies.update(STEP, p, this.fx);
+    for (const e of this.enemies.collectKills()) this.loot.dropFor(e);
+    this.loot.update(STEP, p);
+
+    this.focus = this.findFocus();
+    if (this.input.consumePress('interact') && this.focus && (p.state === 'ground' || p.state === 'attack')) {
+      this.focus.act();
+    }
 
     for (const f of p.fx) {
       this.fx.push(f);
@@ -155,6 +189,23 @@ export class Game {
     }
     p.fx.length = 0;
     this.input.endStep();
+  }
+
+  private findFocus(): Interactable | null {
+    const p = this.player;
+    if (p.state === 'dead') return null;
+    let best: Interactable | null = null;
+    let bestD = Infinity;
+    const all = this.loot.interactables(p);
+    for (const src of this.interactSources) all.push(...src());
+    for (const it of all) {
+      const d = Math.hypot(it.pos.x - p.pos.x, it.pos.z - p.pos.z);
+      if (d <= it.radius && d < bestD && Math.abs(it.pos.y - p.pos.y) < 2.5) {
+        best = it;
+        bestD = d;
+      }
+    }
+    return best;
   }
 
   /** Test hook: run `frames` fixed steps with the given virtual input. */
@@ -172,12 +223,16 @@ export class Game {
     this.cam.update(this.player.pos, look, dt, target ? target.centre() : null);
     this.model.update(this.player, dt);
     this.enemies.updateModels(dt);
+    this.loot.animate(performance.now() / 1000);
     // Keep the shadow area centred on the player.
     const p = this.player.pos;
     this.sun.position.set(p.x + 30, p.y + 60, p.z + 20);
     this.sun.target.position.copy(p);
     this.hud.update(this.player, this.camera, dt, this.input.pointerLocked || this.manual);
     this.hud.updateCombat(this.camera, this.enemies.list, target, this.fx, dt);
+    this.hud.updateLoot(this.focus, this.loot.feed, this.player.inv.gold, dt);
+    this.loot.feed.length = 0;
+    this.ui.update();
     this.fx.length = 0;
     this.renderer.render(this.scene, this.camera);
   }
