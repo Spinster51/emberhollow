@@ -1,0 +1,109 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #0d1016;
+  font-family: 'Trebuchet MS', system-ui, sans-serif;
+  color: #f4ecd8;
+  user-select: none;
+}
+
+#game {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  /* The canvas is drawn at a fraction of screen size; keep the pixels chunky. */
+  image-rendering: pixelated;
+}
+
+#hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.panel {
+  position: absolute;
+  background: rgba(15, 12, 10, 0.72);
+  border: 2px solid #6b4a2b;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  text-shadow: 1px 1px 0 #000;
+}
+
+.hp {
+  top: 14px;
+  left: 14px;
+  width: 220px;
+}
+
+.bar {
+  height: 12px;
+  background: #2a1b14;
+  border: 1px solid #000;
+  margin-top: 4px;
+}
+
+.bar > div {
+  height: 100%;
+  background: linear-gradient(#e2564b, #a3261f);
+  transition: width 0.15s;
+}
+
+.debug {
+  top: 14px;
+  right: 14px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  white-space: pre;
+}
+
+.help {
+  bottom: 14px;
+  left: 14px;
+  white-space: pre;
+}
+
+.settings {
+  bottom: 14px;
+  right: 14px;
+  pointer-events: auto;
+}
+
+.settings input {
+  vertical-align: middle;
+}
+
+.stamina {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  transform: translate(-50%, -50%);
+  transition: opacity 0.4s;
+}
+
+.prompt {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 20px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.toast {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 22px;
+  color: #ffd27a;
+  text-shadow: 2px 2px 0 #000;
+  transition: opacity 0.5s;
+}
