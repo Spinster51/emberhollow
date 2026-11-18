@@ -56,7 +56,7 @@ body {
 }
 
 .debug {
-  top: 14px;
+  top: 196px;
   right: 14px;
   font-family: ui-monospace, monospace;
   font-size: 12px;
@@ -676,4 +676,179 @@ body {
   border-radius: 4px;
   padding: 4px 10px;
   cursor: pointer;
+}
+
+/* ---- world ---- */
+
+.banner {
+  position: absolute;
+  top: 18%;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  transition: opacity 0.8s;
+  opacity: 0;
+  text-shadow: 3px 3px 0 #000;
+}
+
+.banner b {
+  display: block;
+  font-size: 34px;
+  color: #ffd27a;
+  letter-spacing: 1px;
+}
+
+.banner small {
+  font-size: 15px;
+  color: #f4ecd8;
+}
+
+.dialog {
+  position: absolute;
+  left: 50%;
+  bottom: 90px;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 32px));
+  background: rgba(20, 15, 11, 0.95);
+  border: 3px solid #6b4a2b;
+  border-radius: 8px;
+  padding: 12px 16px;
+  pointer-events: auto;
+  font-size: 14px;
+  line-height: 1.5;
+  text-shadow: 1px 1px 0 #000;
+  box-sizing: border-box;
+}
+
+.dialog-title {
+  color: #ffd27a;
+  font-size: 17px;
+  margin-bottom: 6px;
+}
+
+.dialog-text p {
+  margin: 0 0 8px;
+}
+
+.dialog-text ul {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  color: #c8b89a;
+}
+
+.dialog-text .reward {
+  color: #f2c341;
+}
+
+.dialog-text .ok {
+  color: #7be06b;
+}
+
+.dialog-text .hint {
+  color: #9c8a6c;
+  font-style: italic;
+}
+
+.dialog-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dialog-options button,
+.slots button {
+  pointer-events: auto;
+  text-align: left;
+  background: #2c2016;
+  color: #f4ecd8;
+  border: 1px solid #6b4a2b;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.dialog-options button:hover:not(:disabled),
+.slots button:hover {
+  background: #3d2c1e;
+  border-color: #ffd27a;
+}
+
+.dialog-options button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.slots .classcard {
+  cursor: default;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.slots button.danger {
+  border-color: #c0443a;
+  color: #ffb0a8;
+}
+
+.slots .note {
+  color: #ffd27a;
+}
+
+.savebar {
+  display: flex;
+  gap: 10px;
+}
+
+.tracker {
+  position: absolute;
+  top: 210px;
+  right: 14px;
+  width: 230px;
+  font-size: 12px;
+  line-height: 1.45;
+  text-shadow: 1px 1px 0 #000;
+  color: #e8dcc4;
+}
+
+.tracker b {
+  color: #ffd27a;
+}
+
+.tracker .ok {
+  color: #7be06b;
+}
+
+.minimap {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 170px;
+  height: 170px;
+  image-rendering: pixelated;
+  border-radius: 6px;
+}
+
+.bigmap {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(20, 15, 11, 0.95);
+  border: 3px solid #6b4a2b;
+  border-radius: 8px;
+  padding: 10px 12px;
+  pointer-events: auto;
+}
+
+.bigmap canvas {
+  display: block;
+  image-rendering: pixelated;
+  border: 2px solid #3d2c1e;
+}
+
+.bigmap .legend {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #c8b89a;
 }

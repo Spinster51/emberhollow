@@ -324,7 +324,7 @@ export class Skills {
           targets.sort((a, c) => a.pos.distanceTo(p.pos) - c.pos.distanceTo(p.pos));
           const e = targets[0];
           if (e) {
-            const low = e.hp / e.stats.hp < 0.3;
+            const low = e.hp / e.maxHp < 0.3;
             this.hit(ctx, e, 4 * b * (low ? 2 : 1), 30, 4);
             ctx.hitStop(6);
             ctx.shake(0.3);

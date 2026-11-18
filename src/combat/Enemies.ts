@@ -2,23 +2,14 @@ import * as THREE from 'three';
 import { TUNING, type EnemyKind } from '../config';
 import type { World } from '../world/World';
 import type { Player, Strike } from '../player/Player';
-import { Enemy } from './Enemy';
+import { Enemy, type EnemyHooks } from './Enemy';
 import { EnemyModel } from './EnemyModel';
 import { inArc, type CombatFx } from './combat';
+import { ENEMY_STATS } from '../config';
 
 const C = TUNING.combat;
 const E = TUNING.enemies;
 
-/** Test-map camps: [kind, x, z]. Meadow enemies around the spawn point (0, 12). */
-const CAMPS: [EnemyKind, number, number][] = [
-  ['slime', -6, 24],
-  ['slime', -3, 27],
-  ['slime', -9, 28],
-  ['boar', 18, 26],
-  ['boar', 24, 30],
-  ['bandit', -18, 2],
-  ['bandit', -22, -3],
-];
 
 /** All enemies: AI updates, collisions between bodies, sword hits, respawning. */
 export class Enemies {
@@ -26,13 +17,24 @@ export class Enemies {
   readonly models: EnemyModel[] = [];
   readonly group = new THREE.Group();
   private deadFor = new Map<Enemy, number>();
+  /** Set by the game: enemy projectiles and area effects. */
+  hooks: EnemyHooks | null = null;
 
+  /** Spawns the layout's camps. On the main map, level comes from the region (never below the kind's base). */
   constructor(private world: World) {
-    for (const [kind, x, z] of CAMPS) this.spawn(kind, x, z);
+    for (const c of world.layout.camps) {
+      const base = ENEMY_STATS[c.kind].baseLevel;
+      const level = c.level ?? (world.layout.name === 'main' ? Math.max(base, world.regionAt(c.x, c.z).level) : base);
+      this.spawn(c.kind, c.x, c.z, level);
+    }
   }
 
-  spawn(kind: EnemyKind, x: number, z: number): Enemy {
-    const e = new Enemy(kind, new THREE.Vector3(x, 0, z), this.world);
+  spawn(kind: EnemyKind, x: number, z: number, level?: number): Enemy {
+    const e = new Enemy(kind, new THREE.Vector3(x, 0, z), this.world, level);
+    e.hooks = {
+      shoot: (...a) => this.hooks?.shoot(...a),
+      blast: (...a) => this.hooks?.blast(...a),
+    };
     const m = new EnemyModel(e);
     this.list.push(e);
     this.models.push(m);
@@ -41,8 +43,11 @@ export class Enemies {
   }
 
   update(dt: number, player: Player, fx: CombatFx[]): void {
+    const sleep = E.sleepDistance;
     for (const e of this.list) {
-      if (!e.frozen) e.update(dt, player);
+      // Far-away enemies sleep (no AI) unless they are chasing.
+      const far = Math.abs(e.pos.x - player.pos.x) > sleep || Math.abs(e.pos.z - player.pos.z) > sleep;
+      if (!e.frozen && !(far && (e.state === 'idle' || e.state === 'dead'))) e.update(dt, player);
       e.updateBurn(dt);
       fx.push(...e.fx);
       e.fx.length = 0;
@@ -158,7 +163,19 @@ export class Enemies {
     this.deadFor.clear();
   }
 
-  updateModels(dt: number): void {
-    for (const m of this.models) m.update(dt);
+  updateModels(dt: number, view: THREE.Vector3): void {
+    for (const m of this.models) {
+      const far = m.enemy.pos.distanceToSquared(view) > 160 * 160;
+      if (far) {
+        m.root.visible = false;
+        continue;
+      }
+      m.update(dt);
+    }
+  }
+
+  /** Put every enemy back at its camp (resting at a campfire resets the world). */
+  respawnAll(): void {
+    this.resetAll();
   }
 }

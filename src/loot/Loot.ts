@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { TUNING } from '../config';
+import { ENEMY_LOOT, TUNING } from '../config';
 import { mulberry32 } from '../core/noise';
 import { toonMaterial } from '../core/toon';
 import { buildItemMesh } from '../items/ItemMesh';
@@ -27,6 +27,8 @@ export interface Drop {
   vel: THREE.Vector3;
   settled: boolean;
   age: number;
+  /** Your dropped gold after dying: never expires. */
+  persistent?: boolean;
   group: THREE.Group;
   model: THREE.Object3D;
   beam?: THREE.Mesh;
@@ -48,14 +50,22 @@ export class Loot {
 
   /** Roll an enemy's loot table and scatter the drops around its body. */
   dropFor(e: Enemy, cls?: ClassId): void {
-    const t = TUNING.enemies.loot[e.kind];
+    const t = ENEMY_LOOT[e.kind];
     const at = e.pos.clone();
-    const gold = t.gold[0] + Math.floor(this.rand() * (t.gold[1] - t.gold[0] + 1));
+    const up = 1 + 0.15 * (e.level - e.stats.baseLevel);
+    const gold = Math.round((t.gold[0] + Math.floor(this.rand() * (t.gold[1] - t.gold[0] + 1))) * up);
     if (gold > 0) this.spawn({ kind: 'gold', amount: gold }, at);
     if (this.rand() < t.materialChance) this.spawn({ kind: 'material', material: t.material, amount: 1 }, at);
     // Gear mostly drops for your own class (some for others, for the shared chest).
     const forCls = this.rand() < 0.8 ? cls : undefined;
-    if (this.rand() < t.gear) this.spawn({ kind: 'item', item: rollItem(this.rand, t.level, undefined, forCls), amount: 1 }, at);
+    if (this.rand() < t.gear) this.spawn({ kind: 'item', item: rollItem(this.rand, e.level, undefined, forCls), amount: 1 }, at);
+  }
+
+  /** Gold on the ground (your lost gold after dying is persistent). */
+  dropGold(amount: number, at: THREE.Vector3, persistent = false): Drop {
+    const d = this.spawn({ kind: 'gold', amount }, at);
+    d.persistent = persistent;
+    return d;
   }
 
   dropItem(item: Item, at: THREE.Vector3): Drop {
@@ -123,7 +133,7 @@ export class Loot {
           d.settled = true;
         }
       }
-      if (d.kind !== 'item' && d.age > GOLD_LIFETIME) {
+      if (d.kind !== 'item' && !d.persistent && d.age > GOLD_LIFETIME) {
         this.remove(d);
         continue;
       }

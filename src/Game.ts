@@ -8,15 +8,18 @@ import { Hud } from './ui/Hud';
 import { Enemies } from './combat/Enemies';
 import { LockOn } from './combat/LockOn';
 import type { CombatFx } from './combat/combat';
-import { TUNING } from './config';
+import { ENEMY_LOOT, TUNING } from './config';
 import { Loot, type Interactable } from './loot/Loot';
 import { InventoryUI } from './ui/InventoryUI';
 import { CharacterUI, ClassSelect } from './ui/CharacterUI';
 import { Home } from './home/Home';
+import { TEST_LAYOUT, type Layout } from './world/layouts';
 import { Projectiles } from './combat/Projectiles';
 import { xpFor, type ClassId } from './classes/classes';
 import { Skills, type SkillContext } from './classes/Skills';
 import type { Enemy } from './combat/Enemy';
+import { Adventure } from './game/Adventure';
+import { MapView } from './ui/MapView';
 
 const STEP = 1 / 60;
 const PIXEL_KEY = 'emberhollow.pixelScale';
@@ -47,6 +50,8 @@ export class Game {
   readonly fx: CombatFx[] = [];
   /** Remaining frames of hit-stop (the whole simulation freezes briefly on a hit). */
   hitStop = 0;
+  /** Called for every kill (quests listen here). */
+  onKill: ((e: Enemy) => void) | null = null;
   readonly loot: Loot;
   /** The thing E would use right now (nearest in reach), if any. */
   focus: Interactable | null = null;
@@ -60,6 +65,8 @@ export class Game {
   readonly home: Home;
   readonly projectiles: Projectiles;
   readonly skills = new Skills();
+  readonly adventure: Adventure;
+  readonly map: MapView;
   private sun: THREE.DirectionalLight;
   private accumulator = 0;
   private last = performance.now();
@@ -67,7 +74,7 @@ export class Game {
   /** In manual mode (tests) the loop does not simulate on its own; call `step`. */
   manual = false;
 
-  constructor(canvas: HTMLCanvasElement, hudRoot: HTMLElement) {
+  constructor(canvas: HTMLCanvasElement, hudRoot: HTMLElement, layout: Layout = TEST_LAYOUT) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
     this.renderer.setPixelRatio(1);
     this.renderer.shadowMap.enabled = true;
@@ -75,7 +82,8 @@ export class Game {
 
     const sky = new THREE.Color('#8fc4e8');
     this.scene.background = sky;
-    this.scene.fog = new THREE.Fog(sky, 60, 220);
+    this.scene.fog = new THREE.Fog(sky, layout.name === 'main' ? 90 : 60, layout.name === 'main' ? 260 : 220);
+    this.camera.far = layout.name === 'main' ? 300 : 600;
     this.scene.add(new THREE.HemisphereLight('#cfe8ff', '#5a4a36', 1.3));
     this.sun = new THREE.DirectionalLight('#fff2d6', 2.2);
     this.sun.castShadow = true;
@@ -89,7 +97,7 @@ export class Game {
     this.scene.add(this.sun, this.sun.target);
 
     this.input = new Input(canvas);
-    this.world = new World();
+    this.world = new World(layout);
     this.scene.add(this.world.group);
     this.player = new Player(this.world);
     this.scene.add(this.model.root);
@@ -99,6 +107,11 @@ export class Game {
     this.scene.add(this.loot.group);
     this.projectiles = new Projectiles(this.world);
     this.scene.add(this.projectiles.group);
+    this.enemies.hooks = {
+      shoot: (e, kind, from, vel) =>
+        this.projectiles.spawn({ kind, from, vel, owner: e, damage: e.damage, crit: false, poise: e.stats.poiseDamage, knockback: e.stats.knockback, life: 2 }),
+      blast: (at, r, color) => this.projectiles.blast(at, r, color),
+    };
     this.cam = new ThirdPersonCamera(this.camera, this.world);
     this.hud = new Hud(hudRoot, (s) => this.setPixelScale(s), this.pixelScale);
     this.ui = new InventoryUI(
@@ -113,12 +126,21 @@ export class Game {
     this.charUI = new CharacterUI(hudRoot, this.player, () => this.updateMenus(), (msg) => this.player.events.push(msg));
     this.classSelect = new ClassSelect(hudRoot, (cls) => {
       this.chooseClass(cls);
+      this.adventure.onClassPicked(cls);
       this.updateMenus();
     });
     this.classSelect.hide();
-    this.home = new Home(this.world, this.ui, () => this.charUI.show(true));
+    this.home = new Home(this.world, this.ui, {
+      book: () => this.charUI.show(true),
+      sleep: () => this.adventure.sleep(),
+      furnish: () => this.adventure.furnish(),
+      message: (t) => this.player.events.push(t),
+    });
     this.scene.add(this.home.group);
     this.interactSources.push(() => this.home.interactables(this.player.pos));
+    this.adventure = new Adventure(this, hudRoot);
+    this.interactSources.push(() => this.adventure.interactables());
+    this.map = new MapView(hudRoot, this);
 
     window.addEventListener('resize', () => this.resize());
     this.resize();
@@ -181,6 +203,7 @@ export class Game {
     const target = this.lockOn.target;
     if (target) this.cam.followLock(p.pos, target.pos, STEP);
 
+    this.adventure.preUpdate();
     this.computeAim(target);
     const ctx = this.skillContext(target);
     for (let i = 0; i < 4; i++) {
@@ -207,10 +230,12 @@ export class Game {
     this.enemies.update(STEP, p, this.fx);
     for (const e of this.enemies.collectKills()) {
       this.loot.dropFor(e, p.cls);
-      const t = TUNING.enemies.loot[e.kind];
-      p.gainXp(xpFor(t.xp, t.level, p.level));
+      const xp = ENEMY_LOOT[e.kind].xp * (1 + 0.2 * (e.level - e.stats.baseLevel));
+      p.gainXp(xpFor(Math.round(xp), e.level, p.level));
+      this.onKill?.(e);
     }
     this.loot.update(STEP, p);
+    this.adventure.update(STEP);
 
     this.focus = this.findFocus();
     if (this.input.consumePress('interact') && this.focus && (p.state === 'ground' || p.state === 'attack')) {
@@ -251,8 +276,11 @@ export class Game {
     this.updateMenus();
   }
 
-  private updateMenus(): void {
-    this.menuOpen = this.ui.isOpen || this.charUI.isOpen || this.classSelect.visible;
+  updateMenus(): void {
+    const a = this.adventure;
+    this.menuOpen =
+      this.ui.isOpen || this.charUI.isOpen || this.classSelect.visible ||
+      !!a && (a.dialog.isOpen || a.slotSelect.visible) || this.hud.mapOpen;
     if (this.menuOpen) document.exitPointerLock?.();
   }
 
@@ -339,8 +367,10 @@ export class Game {
     if (target) this.lockOn.flick(look.dx, this.player, this.enemies.list);
     this.cam.update(this.player.pos, look, dt, target ? target.centre() : null, this.player.aiming);
     this.model.update(this.player, dt);
-    this.enemies.updateModels(dt);
+    this.enemies.updateModels(dt, this.player.pos);
     this.loot.animate(performance.now() / 1000);
+    this.adventure.render(performance.now() / 1000);
+    this.map.update();
     // Keep the shadow area centred on the player.
     const p = this.player.pos;
     this.sun.position.set(p.x + 30, p.y + 60, p.z + 20);

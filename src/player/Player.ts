@@ -77,6 +77,12 @@ export class Player {
   stealthTime = 0;
   /** Shadowstep: next hit is a guaranteed crit. */
   nextCrit = false;
+  /** Spider poison: damage per second for a few seconds. */
+  poisonTime = 0;
+  private poisonDps = 0;
+  private poisonAcc = 0;
+  /** Where you come back after dying (last campfire or bed). */
+  readonly respawnPoint = new THREE.Vector3(NaN, 0, 0);
   /** Tank counter meter, 0–100: blocks and parries fill it. */
   counter = 0;
   /** Seconds since the last parry (Riposte window). */
@@ -150,8 +156,15 @@ export class Player {
     this.respawn();
   }
 
+  /** Poison (spiders): `dps` damage each second for `time` seconds. */
+  poison(time: number, dps: number): void {
+    this.poisonTime = Math.max(this.poisonTime, time);
+    this.poisonDps = dps;
+  }
+
   respawn(): void {
-    this.pos.copy(this.world.spawn);
+    this.pos.copy(Number.isNaN(this.respawnPoint.x) ? this.world.spawn : this.respawnPoint);
+    this.poisonTime = 0;
     this.vel.set(0, 0, 0);
     this.refreshStats();
     this.hp = this.stats.maxHp;
@@ -218,6 +231,16 @@ export class Player {
     this.guardTime = Math.max(0, this.guardTime - dt);
     this.stealthTime = Math.max(0, this.stealthTime - dt);
     this.sinceParry += dt;
+    if (this.poisonTime > 0 && this.state !== 'dead') {
+      this.poisonTime -= dt;
+      this.poisonAcc += dt;
+      if (this.poisonAcc >= 1) {
+        this.poisonAcc -= 1;
+        this.hp -= this.poisonDps;
+        this.fx.push({ pos: this.pos.clone().setY(this.pos.y + 1.6), amount: this.poisonDps, target: 'player', result: 'hit', stagger: null, dot: true });
+        if (this.hp <= 0) this.die('Poison got you.');
+      }
+    }
     this.aim = aim;
     this.camYaw = camYaw;
 

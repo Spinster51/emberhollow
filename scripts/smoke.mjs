@@ -1082,7 +1082,6 @@ if (shotsDir) {
   await run(() => window.game.charUI.close());
 }
 
-check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
 // Real-time look for a screenshot: free-running loop.
 if (shotsDir) {
@@ -1094,6 +1093,409 @@ if (shotsDir) {
   await shot('05-overview');
 }
 
+// ================================================================ world (milestone 5): main map
+const page2 = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+page2.on('pageerror', (e) => errors.push(String(e)));
+page2.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+await page2.goto(`http://localhost:${PORT}/?test&world=main`);
+await page2.waitForFunction(() => window.game && window.items);
+const run2 = (fn, arg) => page2.evaluate(fn, arg);
+const shot2 = async (name) => {
+  if (shotsDir) await page2.evaluate(() => window.game.step(0, null, true)), await page2.screenshot({ path: `${shotsDir}/${name}.png` });
+};
+await run2(() => {
+  const g = window.game;
+  window.homes = new Map(g.enemies.list.map((e) => [e, e.home.clone()]));
+  for (const e of g.enemies.list) e.frozen = true;
+  // Teleport onto the highest surface, or onto the floor below `y` (indoors).
+  window.tp = (x, z, y = 1e9) => {
+    const p = g.player;
+    p.pos.set(x, g.world.groundAt(x, z, y), z);
+    p.vel.set(0, 0, 0);
+    p.state = 'ground';
+    p.stateTime = 0;
+  };
+  // An enemy of `kind` placed `dist` m north of the player standing at (0, 32) in town.
+  window.arena2 = (kind, dist, frozen = true) => {
+    for (const e of g.enemies.list) {
+      e.home.copy(window.homes.get(e));
+      e.reset();
+      e.frozen = true;
+    }
+    g.lockOn.target = null;
+    g.player.respawn();
+    window.tp(0, 32);
+    g.cam.yaw = 0;
+    g.player.facing = 0;
+    const e = g.enemies.list.find((x) => x.kind === kind);
+    e.home.set(0, 0, 32 - dist);
+    e.reset();
+    e.facing = Math.PI;
+    e.frozen = frozen;
+    return e;
+  };
+  window.talk = (npc) => g.adventure.town.talk(npc);
+  window.pick = (label) => g.adventure.dialog.chooseLabel(label);
+  window.levelTo = (n) => {
+    const p = g.player;
+    while (p.level < n) p.gainXp(Math.round(60 * Math.pow(p.level, 1.6)));
+  };
+  window.killAll = (kind, n) => {
+    let k = 0;
+    for (const e of g.enemies.list) {
+      if (k >= n) break;
+      if (e.kind !== kind || !e.alive) continue;
+      e.takeHit({ damage: 99999, poise: 0, knockback: 0, from: e.pos.clone() }, []);
+      k++;
+    }
+    g.step(1);
+    return k;
+  };
+});
+
+// 35. Regions and the map.
+s = await run2(() => {
+  const w = window.game.world;
+  const r = (x, z) => w.regionAt(x, z);
+  return {
+    size: w.size,
+    town: r(0, 0).id,
+    meadow: `${r(60, 130).id}/${r(60, 130).level}`,
+    forest: `${r(-150, -20).id}/${r(-150, -20).level}`,
+    ruins: `${r(80, -170).id}/${r(80, -170).level}`,
+    chunks: w.group.children.filter((c) => c.name === 'terrain').length,
+    campfires: window.game.adventure.campfires.list.length,
+    npcs: window.game.adventure.town.npcs.length,
+  };
+});
+check('main map: 600 m, chunked, 4 regions with rising levels',
+  s.size === 600 && s.chunks === 144 && s.town === 'town' && s.meadow.startsWith('meadow/') && s.forest.startsWith('forest/') && s.ruins.startsWith('ruins/') &&
+  Number(s.forest.split('/')[1]) >= 5 && Number(s.ruins.split('/')[1]) >= 10,
+  JSON.stringify(s));
+check('7 campfires and 6 villagers', s.campfires === 7 && s.npcs === 6, `${s.campfires} / ${s.npcs}`);
+
+// 36. Region enemies: levels and attack styles.
+s = await run2(() => {
+  const g = window.game;
+  const L = g.enemies.list;
+  const lv = (k) => L.filter((e) => e.kind === k).map((e) => e.level);
+  const out = { wolf: Math.min(...lv('wolf')), skeleton: Math.min(...lv('skeleton')), golem: Math.min(...lv('golem')), total: L.length };
+  const sk = L.find((e) => e.kind === 'skeleton');
+  out.scaled = sk.maxHp > 90 || sk.level === 10;
+  // Goblin archer shoots from range.
+  let e = window.arena2('goblin', 12, false);
+  const p = g.player;
+  let arrows = 0;
+  for (let i = 0; i < 300 && p.hp === p.stats.maxHp; i++) {
+    g.step(1);
+    arrows = Math.max(arrows, g.projectiles.list.filter((x) => x.kind === 'arrow').length);
+  }
+  out.arrow = `${arrows}/${p.stats.maxHp - p.hp}/${Math.round(e.pos.distanceTo(p.pos))}`;
+  // Spider poisons.
+  e = window.arena2('spider', 5, false);
+  for (let i = 0; i < 300 && p.poisonTime <= 0; i++) g.step(1);
+  out.poison = p.poisonTime > 0;
+  // Golem slam hits all around it.
+  e = window.arena2('golem', 4, false);
+  p.respawn();
+  window.tp(0, 32);
+  for (let i = 0; i < 400 && p.hp === p.stats.maxHp; i++) g.step(1);
+  out.slam = `${p.stats.maxHp - p.hp}/${p.state}`;
+  // Cultist orbs.
+  e = window.arena2('cultist', 12, false);
+  let orbs = 0;
+  for (let i = 0; i < 400 && p.hp === p.stats.maxHp; i++) {
+    g.step(1);
+    orbs = Math.max(orbs, g.projectiles.list.filter((x) => x.kind === 'orb').length);
+  }
+  out.orb = `${orbs}/${p.stats.maxHp - p.hp}`;
+  return out;
+});
+check('enemy levels follow the regions', s.wolf >= 5 && s.skeleton >= 10 && s.golem >= 12 && s.total > 50, JSON.stringify(s));
+check('goblin archers shoot arrows from range', Number(s.arrow.split('/')[0]) > 0 && Number(s.arrow.split('/')[1]) > 0, s.arrow);
+check('spiders poison', s.poison);
+check('golem slam hits hard', Number(s.slam.split('/')[0]) >= 30, s.slam);
+check('cultists throw magic orbs', Number(s.orb.split('/')[0]) > 0 && Number(s.orb.split('/')[1]) > 0, s.orb);
+
+// 37. Campfires: discover, rest (heal, respawn point, world reset), fast travel; death drops gold.
+s = await run2(() => {
+  const g = window.game;
+  const a = g.adventure;
+  const p = g.player;
+  window.arena2('slime', 40);
+  const fields = a.campfires.get('fields');
+  window.tp(fields.x + 4, fields.z);
+  g.step(2);
+  const found = a.campfires.discovered.has('fields');
+  const slime = g.enemies.list.find((e) => e.kind === 'slime');
+  slime.takeHit({ damage: 999, poise: 0, knockback: 0, from: slime.pos.clone() }, []);
+  p.hp = 10;
+  window.tp(fields.x, fields.z + 2);
+  g.step(1);
+  const label = g.focus?.label;
+  a.campfireMenu(fields);
+  window.pick('Rest');
+  const rested = { hp: p.hp === p.stats.maxHp, respawn: p.respawnPoint.distanceTo(fields.pos) < 3, slime: slime.alive };
+  a.campfireMenu(fields);
+  const travelled = window.pick('Travel to Town Square');
+  const atTown = Math.hypot(p.pos.x, p.pos.z - 5) < 4;
+  // Death: lose a fifth of your gold where you fell, respawn at the campfire.
+  window.tp(30, 60);
+  p.inv.gold = 100;
+  p.hp = 1;
+  p.takeHit({ damage: 50, poise: 0, knockback: 0, from: p.pos.clone() });
+  g.step(1);
+  const pile = g.loot.drops.find((d) => d.kind === 'gold' && d.persistent);
+  const gold = p.inv.gold;
+  g.step(170);
+  return { found, label, rested, travelled, atTown, gold, pile: pile?.amount, back: p.pos.distanceTo(fields.pos) < 4 };
+});
+check('walking near a campfire discovers it', s.found && s.label === 'Rest at Sunny Fields', s.label);
+check('resting heals, sets respawn and resets the world', s.rested.hp && s.rested.respawn && s.rested.slime, JSON.stringify(s.rested));
+check('fast travel between discovered campfires', s.travelled && s.atTown);
+check('dying drops 20% of your gold where you fell', s.gold === 80 && s.pile === 20, `gold=${s.gold} pile=${s.pile}`);
+check('you respawn at your last campfire', s.back);
+
+// 38. Quests: accept, progress, hand in; the house; the glider.
+s = await run2(() => {
+  const g = window.game;
+  const a = g.adventure;
+  const p = g.player;
+  const out = {};
+  window.arena2('slime', 40);
+  g.chooseClass('warrior');
+  a.startFresh();
+  for (const e of g.enemies.list) e.frozen = true;
+  window.talk('elder');
+  out.offer = a.dialog.current.options.map((o) => o.label).join('|');
+  window.pick('Quest: Slime Trouble');
+  window.pick('Accept');
+  out.active = a.quests.status('slimes');
+  window.killAll('slime', 6);
+  out.tracker = a.quests.tracker(a.owner()).join(' ');
+  const gold0 = p.inv.gold;
+  window.talk('elder');
+  out.handin = window.pick('Hand in: Slime Trouble');
+  out.reward = p.inv.gold - gold0;
+  out.done = a.quests.status('slimes');
+  a.dialog.close();
+  // The house: locked until bought from the steward.
+  const h = g.home;
+  window.tp(h.door.x, h.door.z);
+  g.step(1);
+  out.locked = g.focus?.label;
+  p.inv.gold = 200;
+  window.talk('steward');
+  window.pick('Quest: A Roof of Your Own');
+  window.pick('Accept');
+  window.talk('steward');
+  window.pick('Hand in');
+  a.dialog.close();
+  out.owned = h.owned;
+  out.goldLeft = p.inv.gold;
+  window.tp(h.door.x, h.door.z);
+  g.cam.yaw = 0;
+  window.until = (input, done, limit) => {
+    for (let i = 0; i < limit; i++) {
+      g.step(1, input);
+      if (done()) return i + 1;
+    }
+    return -1;
+  };
+  out.walkIn = window.until({ moveY: 1 }, () => p.pos.z < g.world.homeSite.z + 2, 240) > 0;
+  // The glider: needs the slime quest, cloth and hide.
+  out.gliderBefore = p.gliderUnlocked;
+  p.inv.materials.cloth = 4;
+  p.inv.materials.hide = 3;
+  window.talk('tinker');
+  window.pick('Quest: Wings of Cloth');
+  window.pick('Accept');
+  window.talk('tinker');
+  window.pick('Hand in');
+  a.dialog.close();
+  out.gliderAfter = p.gliderUnlocked;
+  out.matsLeft = `${p.inv.materials.cloth}/${p.inv.materials.hide}`;
+  // Level-gated quest hint.
+  window.talk('scholar');
+  out.hint = a.dialog.current.text.includes('Come back at level 10');
+  a.dialog.close();
+  return out;
+});
+check('the elder offers a quest', s.offer.includes('Quest: Slime Trouble'), s.offer);
+check('kill quest tracks progress and pays out', s.active === 'active' && /6\/6/.test(s.tracker) && s.handin && s.reward === 50 && s.done === 'done', JSON.stringify(s));
+check('the house is locked until bought (150 gold)', /Locked house/.test(s.locked ?? '') && s.owned && s.goldLeft === 50 && s.walkIn, `${s.locked} owned=${s.owned} gold=${s.goldLeft} in=${s.walkIn}`);
+check('the glider quest unlocks the glider', !s.gliderBefore && s.gliderAfter && s.matsLeft === '0/0', `${s.gliderBefore}->${s.gliderAfter} mats=${s.matsLeft}`);
+check('villagers hint at later quests', s.hint);
+
+// 39. Home: bed, furniture, expansion; exploration chests.
+s = await run2(() => {
+  const g = window.game;
+  const a = g.adventure;
+  const p = g.player;
+  const h = g.home;
+  const out = {};
+  window.tp(h.bedPos.x - 1.2, h.bedPos.z, h.floorY + 0.3);
+  p.hp = 5;
+  g.step(1);
+  out.bedLabel = g.focus?.label;
+  a.sleep();
+  out.slept = p.hp === p.stats.maxHp && p.respawnPoint.distanceTo(h.bedPos) < 2;
+  // Furniture: buy a table from the carpenter, place it inside.
+  p.inv.gold = 100;
+  window.talk('carpenter');
+  window.pick('Buy furniture');
+  window.pick('Oak Table');
+  a.dialog.close();
+  out.stock = h.stock.table;
+  window.tp(g.world.homeSite.x, g.world.homeSite.z + 1, h.floorY + 0.3);
+  p.facing = 0;
+  a.startPlacing('table');
+  g.step(1);
+  window.game.step(1, { held: ['attack'] });
+  out.placed = h.placed.length;
+  out.placing = !!a.placing;
+  // Expansion opens the back room.
+  out.backBefore = h.inside(g.world.homeSite.x, g.world.homeSite.z - 8);
+  h.expand();
+  out.backAfter = h.inside(g.world.homeSite.x, g.world.homeSite.z - 8);
+  // A spire chest: rare-or-better loot, once.
+  const c = a.chests.list.find((x) => x.tier === 1);
+  window.tp(c.x + 1, c.z);
+  p.pos.y = c.pos.y;
+  g.step(1);
+  out.chestLabel = g.focus?.label;
+  const before = g.loot.drops.length;
+  a.openChest(c);
+  const items = g.loot.drops.slice(before).filter((d) => d.kind === 'item');
+  out.loot = items.map((d) => d.item.rarity).join(',');
+  g.step(1);
+  out.again = g.focus?.label === 'Open chest';
+  return out;
+});
+check('sleeping in your bed heals and sets respawn', s.slept && /Sleep/.test(s.bedLabel ?? ''), s.bedLabel);
+check('buy furniture and place it in your home', s.stock === 1 && s.placed === 1 && !s.placing, JSON.stringify(s));
+check('the expansion opens the back room', !s.backBefore && s.backAfter);
+check('spire chests hold rare+ loot and open once', s.chestLabel === 'Open chest' && /^(rare|epic|legendary),/.test(s.loot) && !s.again, `${s.chestLabel} ${s.loot}`);
+
+// 40. Saving: 4 slots in IndexedDB, load restores everything, export format validates.
+s = await run2(async () => {
+  const g = window.game;
+  const a = g.adventure;
+  const p = g.player;
+  a.slot = 0;
+  p.inv.gold = 321;
+  p.inv.add(window.items.makeItem('ironSword', 'epic', 3));
+  const display = window.items.makeItem('greatsword', 'rare');
+  g.home.spots[0].item = display;
+  await a.saveNow();
+  const saved = await a.store.load();
+  const slot = saved.slots[0];
+  // Change things, then load the slot back.
+  p.inv.gold = 1;
+  p.inv.bag.fill(null);
+  a.quests.load({});
+  a.play(0);
+  let bad = '';
+  try {
+    window.items.validateAccount({});
+  } catch (e) {
+    bad = 'threw';
+  }
+  return {
+    slots: saved.slots.length,
+    cls: slot?.cls,
+    gold: p.inv.gold,
+    sword: p.inv.bag.some((x) => x?.base === 'ironSword' && x.rarity === 'epic'),
+    quests: a.quests.status('slimes') + '/' + a.quests.status('house'),
+    home: `${saved.home.owned}/${saved.home.displays[0]?.base}/${saved.home.placed.length}`,
+    glider: p.gliderUnlocked,
+    bad,
+  };
+});
+check('save: 4 slots in IndexedDB with the shared home', s.slots === 4 && s.cls === 'warrior' && s.home === 'true/greatsword/1', JSON.stringify(s));
+check('load restores gold, items, quests and the glider', s.gold === 321 && s.sword && s.quests === 'done/done' && s.glider, JSON.stringify(s));
+check('a broken save file is rejected', s.bad === 'threw');
+
+// 41. Title screen: slots, new character, region banner, map.
+s = await run2(() => {
+  const g = window.game;
+  const a = g.adventure;
+  a.slotSelect.show(a.account);
+  const cards = document.querySelectorAll('.slots .classcard').length;
+  a.create(1);
+  const picking = g.classSelect.visible;
+  document.querySelectorAll('.classpick:not(.slots) .classcard')[3].click();
+  const out = { cards, picking, slot: a.slot, cls: g.player.cls, menu: g.menuOpen };
+  // Region banner when walking out of town.
+  window.tp(0, 30);
+  g.step(1);
+  window.tp(60, 130);
+  g.step(1, null, true);
+  out.banner = document.querySelector('#banner b').textContent;
+  g.map.toggle(true);
+  out.map = g.menuOpen && document.querySelector('.bigmap').style.display === '';
+  g.map.toggle(false);
+  out.mini = document.querySelector('.minimap').style.display !== 'none';
+  return out;
+});
+check('title screen shows 4 slots; new character goes through class pick', s.cards === 4 && s.picking && s.slot === 1 && s.cls === 'assassin' && !s.menu, JSON.stringify(s));
+check('entering a region shows its name', s.banner === 'Sunmeadow', s.banner);
+check('minimap and M map', s.map && s.mini);
+
+if (shotsDir) {
+  await run2(() => {
+    const g = window.game;
+    for (const e of g.enemies.list) {
+      e.home.copy(window.homes.get(e));
+      e.reset();
+      e.frozen = true;
+    }
+    g.chooseClass('warrior');
+    window.tp(4, 2);
+    g.cam.yaw = 0.5;
+    g.cam.pitch = 0.3;
+    g.cam.distance = 8;
+    for (let i = 0; i < 4; i++) g.step(1, null, true);
+  });
+  await shot2('18-town');
+  await run2(() => {
+    const g = window.game;
+    window.tp(6, -8);
+    g.cam.yaw = 0;
+    g.step(1);
+    window.talk('elder');
+    g.step(1, null, true);
+  });
+  await shot2('19-dialog');
+  await run2(() => {
+    const g = window.game;
+    g.adventure.dialog.close();
+    g.map.toggle(true);
+    g.step(3, null, true);
+  });
+  await shot2('20-map');
+  await run2(() => {
+    const g = window.game;
+    g.map.toggle(false);
+    const e = g.enemies.list.find((x) => x.kind === 'golem');
+    window.tp(e.pos.x + 7, e.pos.z + 5);
+    g.cam.yaw = Math.atan2(7, 5);
+    g.cam.pitch = 0.25;
+    for (let i = 0; i < 4; i++) g.step(1, null, true);
+  });
+  await shot2('21-ruins-golem');
+  await run2(() => {
+    const g = window.game;
+    const e = g.enemies.list.find((x) => x.kind === 'wolf');
+    window.tp(e.pos.x + 6, e.pos.z + 4);
+    g.cam.yaw = Math.atan2(6, 4);
+    g.cam.pitch = 0.25;
+    for (let i = 0; i < 4; i++) g.step(1, null, true);
+  });
+  await shot2('22-forest-wolves');
+}
+
+check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 await browser.close();
 server.kill();
 spawn('pkill', ['-f', `vite preview --port ${PORT}`]);

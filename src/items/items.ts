@@ -189,6 +189,12 @@ export const MATERIALS: Record<string, Material> = {
   gel: { id: 'gel', name: 'Slime Gel', color: '#6fd36a' },
   hide: { id: 'hide', name: 'Boar Hide', color: '#9a6b47' },
   cloth: { id: 'cloth', name: 'Bandit Cloth', color: '#c0443a' },
+  fang: { id: 'fang', name: 'Wolf Fang', color: '#d8d2c0' },
+  silk: { id: 'silk', name: 'Spider Silk', color: '#e8e8f0' },
+  feather: { id: 'feather', name: 'Goblin Feather', color: '#6fb06a' },
+  bone: { id: 'bone', name: 'Old Bone', color: '#e6dcc4' },
+  core: { id: 'core', name: 'Golem Core', color: '#ff8a3a' },
+  ash: { id: 'ash', name: 'Cult Ash', color: '#9a7ab0' },
 };
 
 let nextUid = 1;
@@ -196,6 +202,11 @@ let nextUid = 1;
 const scale = (v: number, level: number) => v * (1 + 0.1 * (level - 1));
 const isPct = (s: StatKey) => ['damagePct', 'crit', 'attackSpeed', 'moveSpeed', 'cooldown', 'fireRes', 'block'].includes(s);
 const roundStat = (s: StatKey, v: number) => (isPct(s) ? Math.round(v * 100) / 100 : Math.round(v));
+
+/** Keep new item ids above any loaded from a save. */
+export function bumpUid(uid: number): void {
+  nextUid = Math.max(nextUid, uid + 1);
+}
 
 /** Make a specific item (used for starting gear and tests). */
 export function makeItem(baseId: string, rarity: Rarity = 'common', level = 1, affixes: Affix[] = [], unique?: string): Item {
@@ -229,14 +240,19 @@ export function usableBy(baseId: string, cls: ClassId): boolean {
 /** Roll a random item. `rand` returns [0, 1). With `cls`, only gear that class can use drops. */
 export function rollItem(rand: () => number, level: number, rarity?: Rarity, cls?: ClassId): Item {
   rarity ??= rollRarity(rand);
+  let item: Item;
   if (rarity === 'legendary') {
     const pool = UNIQUES.filter((u) => !cls || usableBy(u.base, cls));
     const u = pool[Math.floor(rand() * pool.length)];
-    return makeItem(u.base, 'legendary', level, rollAffixes(rand, BASE_BY_ID[u.base].slot, level, 3), u.id);
+    item = makeItem(u.base, 'legendary', level, rollAffixes(rand, BASE_BY_ID[u.base].slot, level, 3), u.id);
+  } else {
+    const pool = BASES.filter((b) => !b.starter && (!cls || usableBy(b.id, cls)));
+    const base = pool[Math.floor(rand() * pool.length)];
+    item = makeItem(base.id, rarity, level, rollAffixes(rand, base.slot, level, RARITY_INFO[rarity].affixes));
   }
-  const pool = BASES.filter((b) => !b.starter && (!cls || usableBy(b.id, cls)));
-  const base = pool[Math.floor(rand() * pool.length)];
-  return makeItem(base.id, rarity, level, rollAffixes(rand, base.slot, level, RARITY_INFO[rarity].affixes));
+  // Gear needs a minimum level (DESIGN §9): one below its item level.
+  item.req = Math.max(1, level - 1);
+  return item;
 }
 
 export function rollRarity(rand: () => number): Rarity {

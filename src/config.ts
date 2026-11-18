@@ -80,35 +80,117 @@ export const TUNING = {
   },
 
   enemies: {
-    /**
-     * Loot per kill: gold range, chance of a piece of gear, the family's crafting material.
-     * `level` sets item level (meadow 1–3).
-     */
-    loot: {
-      slime: { level: 1, xp: 12, gold: [1, 4], gear: 0.15, material: 'gel', materialChance: 0.7 },
-      boar: { level: 2, xp: 25, gold: [3, 8], gear: 0.3, material: 'hide', materialChance: 0.7 },
-      bandit: { level: 3, xp: 35, gold: [6, 15], gear: 0.45, material: 'cloth', materialChance: 0.6 },
-    },
     respawnTime: 60,
     /** Camps respawn only when the player is at least this far away. */
     respawnDistance: 35,
-    slime: {
-      hp: 30, poise: 15, radius: 0.45, speed: 2.4, aggro: 10, leash: 25, range: 1.6,
-      windup: 0.45, active: 0.25, recover: 0.6, damage: 8, poiseDamage: 8, knockback: 3, cooldown: 1.2,
-      lunge: 5,
-    },
-    boar: {
-      hp: 60, poise: 40, radius: 0.6, speed: 3.5, aggro: 14, leash: 30, range: 9,
-      windup: 0.7, active: 1.1, recover: 1.0, damage: 18, poiseDamage: 30, knockback: 9, cooldown: 2.5,
-      lunge: 12,
-    },
-    bandit: {
-      hp: 70, poise: 35, radius: 0.4, speed: 4.2, aggro: 14, leash: 30, range: 2.0,
-      windup: 0.4, active: 0.15, recover: 0.5, damage: 12, poiseDamage: 14, knockback: 3, cooldown: 1.0,
-      lunge: 3,
-    },
+    /** Enemies further than this from the player sleep (no AI). */
+    sleepDistance: 110,
+    /** Per level above an enemy's base level: HP ×(1 + hp), damage ×(1 + damage). */
+    perLevel: { hp: 0.3, damage: 0.15, poise: 0.1 },
   },
 };
 
-export type EnemyKind = 'slime' | 'boar' | 'bandit';
+export type EnemyStyle = 'lunge' | 'charge' | 'melee' | 'ranged' | 'slam';
+
+/** Per-kind enemy numbers at the kind's base level. Times in seconds, speeds m/s. */
+export interface EnemyStats {
+  name: string;
+  style: EnemyStyle;
+  baseLevel: number;
+  hp: number;
+  poise: number;
+  radius: number;
+  /** Height of the body centre and the top of the head (UI, hits). */
+  centreY: number;
+  topY: number;
+  speed: number;
+  aggro: number;
+  leash: number;
+  /** Attack range (ranged: shooting range). */
+  range: number;
+  windup: number;
+  active: number;
+  recover: number;
+  damage: number;
+  poiseDamage: number;
+  knockback: number;
+  cooldown: number;
+  /** Lunge / charge speed. */
+  lunge: number;
+  /** Ranged: preferred distance and projectile. */
+  keep?: number;
+  projectile?: 'arrow' | 'orb';
+  projectileSpeed?: number;
+  /** Slam radius. */
+  aoe?: number;
+  /** Lunge hits poison the player. */
+  poison?: boolean;
+  /** Melee: 2-hit combo. */
+  combo?: boolean;
+}
+
+const enemy = (s: EnemyStats) => s;
+
+export const ENEMY_STATS: Record<EnemyKind, EnemyStats> = {
+  slime: enemy({
+    name: 'Slime', style: 'lunge', baseLevel: 1, hp: 30, poise: 15, radius: 0.45, centreY: 0.4, topY: 0.9,
+    speed: 2.4, aggro: 10, leash: 25, range: 1.6, windup: 0.45, active: 0.25, recover: 0.6,
+    damage: 8, poiseDamage: 8, knockback: 3, cooldown: 1.2, lunge: 5,
+  }),
+  boar: enemy({
+    name: 'Boar', style: 'charge', baseLevel: 2, hp: 60, poise: 40, radius: 0.6, centreY: 0.7, topY: 1.3,
+    speed: 3.5, aggro: 14, leash: 30, range: 9, windup: 0.7, active: 1.1, recover: 1.0,
+    damage: 18, poiseDamage: 30, knockback: 9, cooldown: 2.5, lunge: 12,
+  }),
+  bandit: enemy({
+    name: 'Bandit', style: 'melee', baseLevel: 3, hp: 70, poise: 35, radius: 0.4, centreY: 1.2, topY: 2.1,
+    speed: 4.2, aggro: 14, leash: 30, range: 2.0, windup: 0.4, active: 0.15, recover: 0.5,
+    damage: 12, poiseDamage: 14, knockback: 3, cooldown: 1.0, lunge: 3, combo: true,
+  }),
+  wolf: enemy({
+    name: 'Wolf', style: 'lunge', baseLevel: 5, hp: 55, poise: 25, radius: 0.5, centreY: 0.6, topY: 1.2,
+    speed: 6, aggro: 16, leash: 35, range: 3.5, windup: 0.35, active: 0.35, recover: 0.5,
+    damage: 14, poiseDamage: 14, knockback: 4, cooldown: 1.2, lunge: 10,
+  }),
+  spider: enemy({
+    name: 'Spider', style: 'lunge', baseLevel: 6, hp: 50, poise: 20, radius: 0.55, centreY: 0.45, topY: 0.9,
+    speed: 4.5, aggro: 12, leash: 30, range: 3, windup: 0.4, active: 0.3, recover: 0.6,
+    damage: 10, poiseDamage: 10, knockback: 2, cooldown: 1.4, lunge: 8, poison: true,
+  }),
+  goblin: enemy({
+    name: 'Goblin Archer', style: 'ranged', baseLevel: 7, hp: 40, poise: 15, radius: 0.35, centreY: 0.8, topY: 1.5,
+    speed: 4.5, aggro: 22, leash: 35, range: 18, windup: 0.7, active: 0.1, recover: 0.6,
+    damage: 12, poiseDamage: 8, knockback: 2, cooldown: 1.6, lunge: 0, keep: 11, projectile: 'arrow', projectileSpeed: 24,
+  }),
+  skeleton: enemy({
+    name: 'Skeleton', style: 'melee', baseLevel: 10, hp: 90, poise: 40, radius: 0.4, centreY: 1.2, topY: 2.1,
+    speed: 3.8, aggro: 15, leash: 30, range: 2.0, windup: 0.45, active: 0.15, recover: 0.5,
+    damage: 18, poiseDamage: 16, knockback: 3, cooldown: 1.1, lunge: 3, combo: true,
+  }),
+  golem: enemy({
+    name: 'Stone Golem', style: 'slam', baseLevel: 12, hp: 260, poise: 120, radius: 1.0, centreY: 1.6, topY: 3.3,
+    speed: 2.4, aggro: 14, leash: 28, range: 3.0, windup: 1.0, active: 0.2, recover: 1.2,
+    damage: 40, poiseDamage: 60, knockback: 9, cooldown: 2.4, lunge: 0, aoe: 3.5,
+  }),
+  cultist: enemy({
+    name: 'Cultist', style: 'ranged', baseLevel: 11, hp: 70, poise: 25, radius: 0.4, centreY: 1.2, topY: 2.1,
+    speed: 3.5, aggro: 22, leash: 32, range: 18, windup: 0.9, active: 0.1, recover: 0.7,
+    damage: 24, poiseDamage: 20, knockback: 4, cooldown: 2.2, lunge: 0, keep: 12, projectile: 'orb', projectileSpeed: 13,
+  }),
+};
+
+/** Loot per kill: XP, gold range, chance of gear, the family's crafting material. */
+export const ENEMY_LOOT: Record<EnemyKind, { xp: number; gold: [number, number]; gear: number; material: string; materialChance: number }> = {
+  slime: { xp: 12, gold: [1, 4], gear: 0.15, material: 'gel', materialChance: 0.7 },
+  boar: { xp: 25, gold: [3, 8], gear: 0.3, material: 'hide', materialChance: 0.7 },
+  bandit: { xp: 35, gold: [6, 15], gear: 0.45, material: 'cloth', materialChance: 0.6 },
+  wolf: { xp: 50, gold: [5, 12], gear: 0.25, material: 'fang', materialChance: 0.6 },
+  spider: { xp: 55, gold: [5, 12], gear: 0.25, material: 'silk', materialChance: 0.7 },
+  goblin: { xp: 60, gold: [10, 22], gear: 0.4, material: 'feather', materialChance: 0.6 },
+  skeleton: { xp: 80, gold: [12, 26], gear: 0.4, material: 'bone', materialChance: 0.7 },
+  golem: { xp: 160, gold: [30, 60], gear: 0.8, material: 'core', materialChance: 0.9 },
+  cultist: { xp: 90, gold: [15, 30], gear: 0.5, material: 'ash', materialChance: 0.6 },
+};
+
+export type EnemyKind = 'slime' | 'boar' | 'bandit' | 'wolf' | 'spider' | 'goblin' | 'skeleton' | 'golem' | 'cultist';
 export type StaggerKind = 'interrupted' | 'stunned' | 'dazed' | 'knockdown';

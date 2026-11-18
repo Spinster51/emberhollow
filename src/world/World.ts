@@ -1,9 +1,10 @@
 import * as THREE from 'three';
-import { fbm, mulberry32, smoothstep } from '../core/noise';
+import { mulberry32 } from '../core/noise';
 import { toonMaterial } from '../core/toon';
 import { TUNING } from '../config';
+import { TEST_LAYOUT, type Layout, type Region } from './layouts';
 
-/** Axis-aligned solid block (towers, walls, crates). Every side is climbable. */
+/** Axis-aligned solid block (towers, walls, crates, buildings). Every side is climbable. */
 export interface Box {
   minX: number;
   maxX: number;
@@ -21,89 +22,123 @@ export interface WallHit {
   box: Box | null;
 }
 
-const SIZE = 256;
 const RES = 1;
-const N = SIZE / RES + 1;
-const HALF = SIZE / 2;
-export const WORLD_LIMIT = HALF - 8;
+const CHUNK = 50;
+const CELL = 16;
 
 /**
- * Milestone-1 test map: rolling hills, a cliff plateau, a climbable mountain, a stone pillar
- * and some blocks. Height queries match the rendered triangles exactly.
+ * Heightmap terrain plus solid blocks, built from a layout (the small test map or the 600 m
+ * main map). Height queries match the rendered triangles exactly. The terrain is split into
+ * 50 m chunks so the camera's far plane culls distant ground.
  */
 export class World {
-  readonly heights = new Float32Array(N * N);
+  readonly size: number;
+  readonly half: number;
+  readonly limit: number;
+  private readonly n: number;
+  readonly heights: Float32Array;
   readonly boxes: Box[] = [];
+  /** Boxes by 16 m grid cell (each box is listed in every cell it overlaps, plus a margin). */
+  private grid = new Map<number, Box[]>();
   readonly group = new THREE.Group();
-  readonly spawn = new THREE.Vector3(0, 0, 12);
-  /** Where the test home base stands (kept free of trees). */
-  readonly homeSite = new THREE.Vector3(12, 0, -4);
+  readonly spawn: THREE.Vector3;
+  readonly homeSite: THREE.Vector3;
 
-  constructor() {
+  constructor(readonly layout: Layout = TEST_LAYOUT) {
+    this.size = layout.size;
+    this.half = layout.size / 2;
+    this.limit = this.half - 8;
+    this.n = this.size / RES + 1;
+    const N = this.n;
+    this.heights = new Float32Array(N * N);
     for (let iz = 0; iz < N; iz++) {
       for (let ix = 0; ix < N; ix++) {
-        this.heights[iz * N + ix] = this.shape(ix * RES - HALF, iz * RES - HALF);
+        this.heights[iz * N + ix] = layout.shape(ix * RES - this.half, iz * RES - this.half);
       }
     }
-    this.addBoxes();
+    this.spawn = new THREE.Vector3(layout.spawn[0], 0, layout.spawn[1]);
+    this.homeSite = new THREE.Vector3(layout.homeSite[0], 0, layout.homeSite[1]);
+    this.addBlocks();
     this.spawn.y = this.groundAt(this.spawn.x, this.spawn.z, 1e9);
-    this.buildTerrainMesh();
-    this.buildBoxMeshes();
+    this.buildTerrain();
     this.scatterTrees();
   }
 
-  /** Analytic height used only to fill the grid. */
-  private shape(x: number, z: number): number {
-    let h = fbm(x * 0.025, z * 0.025, 4, 3) * 6 - 2;
-
-    // Plateau with sheer cliffs, ~12 m tall.
-    const dp = Math.hypot(x - 45, z + 20);
-    h += (11 + fbm(x * 0.1, z * 0.1, 2, 9) * 1.5) * (1 - smoothstep(20, 23, dp));
-
-    // Mountain: gentle at the base, steep near the peak.
-    const dm = Math.hypot(x + 55, z + 50);
-    const t = Math.max(0, 1 - dm / 48);
-    h += 42 * Math.pow(t, 1.7) * (0.85 + 0.3 * fbm(x * 0.06, z * 0.06, 3, 5));
-
-    // Narrow rock spire.
-    const ds = Math.hypot(x - 10, z - 45);
-    h += 24 * (1 - smoothstep(4, 6.5, ds));
-
-    // Raised rim at the world edge.
-    const de = Math.max(Math.abs(x), Math.abs(z));
-    h += Math.max(0, de - (HALF - 20)) * 2.5;
-    return h;
+  regionAt(x: number, z: number): Region {
+    return this.layout.region(x, z);
   }
 
-  private addBoxes(): void {
-    const add = (cx: number, cz: number, w: number, d: number, height: number) => {
-      const minX = cx - w / 2;
-      const maxX = cx + w / 2;
-      const minZ = cz - d / 2;
-      const maxZ = cz + d / 2;
-      let base = Infinity;
-      for (const [x, z] of [
-        [minX, minZ],
-        [maxX, minZ],
-        [minX, maxZ],
-        [maxX, maxZ],
-        [cx, cz],
-      ]) {
-        base = Math.min(base, this.heightAt(x, z));
+  private addBlocks(): void {
+    const mats = new Map<number, THREE.Material>();
+    const cap = toonMaterial(0x7d6e60);
+    for (const s of this.layout.blocks((x, z) => this.heightAt(x, z))) {
+      const minX = s.cx - s.w / 2;
+      const maxX = s.cx + s.w / 2;
+      const minZ = s.cz - s.d / 2;
+      const maxZ = s.cz + s.d / 2;
+      let base = s.base;
+      if (base === undefined) {
+        base = Infinity;
+        for (const [x, z] of [[minX, minZ], [maxX, minZ], [minX, maxZ], [maxX, maxZ], [s.cx, s.cz]]) {
+          base = Math.min(base, this.heightAt(x, z));
+        }
       }
-      this.boxes.push({ minX, maxX, minZ, maxZ, minY: base - 1, maxY: base + height });
-    };
-    add(-22, 28, 6, 6, 18); // stone tower (climbable on one full stamina bar)
-    add(20, 8, 14, 1.5, 6); // wall
-    add(4, 2, 1.6, 1.6, 1.0); // crate (vault)
-    add(7, 4, 1.6, 1.6, 2.4); // tall crate (climb)
-    add(-8, 0, 3, 3, 4); // block
+      const sink = s.base === undefined ? (s.sink ?? 1) : 0;
+      const box: Box = { minX, maxX, minZ, maxZ, minY: base - sink, maxY: base + s.h };
+      const color = s.color ?? 0xa59a8c;
+      if (!mats.has(color)) mats.set(color, toonMaterial(color));
+      const m = this.addSolid(box, mats.get(color)!);
+      if (s.cap !== false && s.color === undefined) {
+        const top = new THREE.Mesh(new THREE.BoxGeometry(s.w + 0.2, 0.25, s.d + 0.2), cap);
+        top.position.set(m.position.x, box.maxY - 0.1, m.position.z);
+        top.castShadow = true;
+        this.group.add(top);
+      }
+    }
+  }
+
+  /** Add a solid block after construction (buildings). Every side is climbable, like other boxes. */
+  addSolid(box: Box, material: THREE.Material): THREE.Mesh {
+    this.boxes.push(box);
+    for (let ix = Math.floor((box.minX - 1) / CELL); ix <= Math.floor((box.maxX + 1) / CELL); ix++) {
+      for (let iz = Math.floor((box.minZ - 1) / CELL); iz <= Math.floor((box.maxZ + 1) / CELL); iz++) {
+        const key = ix * 100003 + iz;
+        let list = this.grid.get(key);
+        if (!list) this.grid.set(key, (list = []));
+        list.push(box);
+      }
+    }
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(box.maxX - box.minX, box.maxY - box.minY, box.maxZ - box.minZ),
+      material,
+    );
+    m.position.set((box.minX + box.maxX) / 2, (box.minY + box.maxY) / 2, (box.minZ + box.maxZ) / 2);
+    m.castShadow = m.receiveShadow = true;
+    this.group.add(m);
+    return m;
+  }
+
+  /** Remove a block added with addSolid (doors that open). */
+  removeSolid(box: Box, mesh: THREE.Object3D): void {
+    const i = this.boxes.indexOf(box);
+    if (i >= 0) this.boxes.splice(i, 1);
+    for (const list of this.grid.values()) {
+      const j = list.indexOf(box);
+      if (j >= 0) list.splice(j, 1);
+    }
+    this.group.remove(mesh);
+  }
+
+  /** Boxes that might touch a point (within ~1 m). */
+  private boxesAt(x: number, z: number): Box[] {
+    return this.grid.get(Math.floor(x / CELL) * 100003 + Math.floor(z / CELL)) ?? [];
   }
 
   /** Terrain height, exactly matching the mesh triangles. */
   heightAt(x: number, z: number): number {
-    const gx = Math.min(N - 1.0001, Math.max(0, (x + HALF) / RES));
-    const gz = Math.min(N - 1.0001, Math.max(0, (z + HALF) / RES));
+    const N = this.n;
+    const gx = Math.min(N - 1.0001, Math.max(0, (x + this.half) / RES));
+    const gz = Math.min(N - 1.0001, Math.max(0, (z + this.half) / RES));
     const ix = Math.floor(gx);
     const iz = Math.floor(gz);
     const fx = gx - ix;
@@ -133,7 +168,7 @@ export class World {
   groundAt(x: number, z: number, feetY: number): number {
     let h = this.heightAt(x, z);
     const r = TUNING.radius * 0.5;
-    for (const b of this.boxes) {
+    for (const b of this.boxesAt(x, z)) {
       if (x < b.minX - r || x > b.maxX + r || z < b.minZ - r || z > b.maxZ + r) continue;
       if (feetY >= b.maxY - TUNING.stepUp - 0.01) h = Math.max(h, b.maxY);
     }
@@ -145,7 +180,7 @@ export class World {
    */
   resolveBoxes(p: THREE.Vector3, radius: number, height: number): WallHit | null {
     let hit: WallHit | null = null;
-    for (const b of this.boxes) {
+    for (const b of this.boxesAt(p.x, p.z)) {
       if (p.y >= b.maxY - 0.05 || p.y + height <= b.minY) continue;
       const cx = Math.min(b.maxX, Math.max(b.minX, p.x));
       const cz = Math.min(b.maxZ, Math.max(b.minZ, p.z));
@@ -197,7 +232,7 @@ export class World {
   /** True if the point is inside the terrain or a box (with a margin), for camera collision. */
   isSolid(p: THREE.Vector3, margin = 0.3): boolean {
     if (this.heightAt(p.x, p.z) + margin > p.y) return true;
-    for (const b of this.boxes) {
+    for (const b of this.boxesAt(p.x, p.z)) {
       if (
         p.x > b.minX - margin && p.x < b.maxX + margin &&
         p.y > b.minY - margin && p.y < b.maxY + margin &&
@@ -208,105 +243,91 @@ export class World {
   }
 
   clampToWorld(p: THREE.Vector3): void {
-    p.x = Math.max(-WORLD_LIMIT, Math.min(WORLD_LIMIT, p.x));
-    p.z = Math.max(-WORLD_LIMIT, Math.min(WORLD_LIMIT, p.z));
+    p.x = Math.max(-this.limit, Math.min(this.limit, p.x));
+    p.z = Math.max(-this.limit, Math.min(this.limit, p.z));
   }
 
-  private buildTerrainMesh(): void {
-    const positions = new Float32Array(N * N * 3);
-    const colors = new Float32Array(N * N * 3);
-    const grass = new THREE.Color('#6fa84a');
-    const grassDark = new THREE.Color('#4d7f36');
-    const rock = new THREE.Color('#8a7f72');
-    const snow = new THREE.Color('#e8eef2');
+  /** Terrain in chunks, with normals from the heightmap so chunk edges match. */
+  private buildTerrain(): void {
+    const N = this.n;
+    const mat = toonMaterial(0xffffff, { vertexColors: true });
     const c = new THREE.Color();
-    for (let iz = 0; iz < N; iz++) {
-      for (let ix = 0; ix < N; ix++) {
-        const i = iz * N + ix;
-        const x = ix * RES - HALF;
-        const z = iz * RES - HALF;
-        const h = this.heights[i];
-        positions.set([x, h, z], i * 3);
-        const slope = this.slopeAt(x, z);
-        c.copy(grass).lerp(grassDark, fbm(x * 0.15, z * 0.15, 2, 4));
-        c.lerp(rock, smoothstep(0.7, 1.2, slope));
-        if (h > 30) c.lerp(snow, smoothstep(30, 36, h) * (1 - smoothstep(0.9, 1.4, slope)));
-        colors.set([c.r, c.g, c.b], i * 3);
+    const cells = N - 1;
+    for (let cz0 = 0; cz0 < cells; cz0 += CHUNK) {
+      for (let cx0 = 0; cx0 < cells; cx0 += CHUNK) {
+        const w = Math.min(CHUNK, cells - cx0) + 1;
+        const d = Math.min(CHUNK, cells - cz0) + 1;
+        const positions = new Float32Array(w * d * 3);
+        const normals = new Float32Array(w * d * 3);
+        const colors = new Float32Array(w * d * 3);
+        for (let j = 0; j < d; j++) {
+          for (let i = 0; i < w; i++) {
+            const ix = cx0 + i;
+            const iz = cz0 + j;
+            const x = ix * RES - this.half;
+            const z = iz * RES - this.half;
+            const h = this.heights[iz * N + ix];
+            const k = (j * w + i) * 3;
+            positions[k] = x;
+            positions[k + 1] = h;
+            positions[k + 2] = z;
+            const hx = this.heights[iz * N + Math.min(N - 1, ix + 1)] - this.heights[iz * N + Math.max(0, ix - 1)];
+            const hz = this.heights[Math.min(N - 1, iz + 1) * N + ix] - this.heights[Math.max(0, iz - 1) * N + ix];
+            const nl = Math.hypot(hx, 2 * RES, hz);
+            normals[k] = -hx / nl;
+            normals[k + 1] = (2 * RES) / nl;
+            normals[k + 2] = -hz / nl;
+            this.layout.colour(x, z, h, this.slopeAt(x, z), c);
+            colors[k] = c.r;
+            colors[k + 1] = c.g;
+            colors[k + 2] = c.b;
+          }
+        }
+        const index: number[] = [];
+        for (let j = 0; j < d - 1; j++) {
+          for (let i = 0; i < w - 1; i++) {
+            const a = j * w + i;
+            const b = a + 1;
+            const dd = a + w;
+            const e = dd + 1;
+            // Same split as heightAt: (00,01,10) and (10,01,11).
+            index.push(a, dd, b, b, dd, e);
+          }
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+        geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        geo.setIndex(index);
+        geo.computeBoundingSphere();
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.receiveShadow = true;
+        mesh.name = 'terrain';
+        this.group.add(mesh);
       }
-    }
-    const index: number[] = [];
-    for (let iz = 0; iz < N - 1; iz++) {
-      for (let ix = 0; ix < N - 1; ix++) {
-        const a = iz * N + ix; // (0,0)
-        const b = a + 1; // (1,0)
-        const d = a + N; // (0,1)
-        const e = d + 1; // (1,1)
-        // Same split as heightAt: (00,01,10) and (10,01,11).
-        index.push(a, d, b, b, d, e);
-      }
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geo.setIndex(index);
-    geo.computeVertexNormals();
-    const mesh = new THREE.Mesh(geo, toonMaterial(0xffffff, { vertexColors: true }));
-    mesh.receiveShadow = true;
-    mesh.name = 'terrain';
-    this.group.add(mesh);
-  }
-
-  /** Add a solid block after construction (buildings). Every side is climbable, like other boxes. */
-  addSolid(box: Box, material: THREE.Material): THREE.Mesh {
-    this.boxes.push(box);
-    const m = new THREE.Mesh(
-      new THREE.BoxGeometry(box.maxX - box.minX, box.maxY - box.minY, box.maxZ - box.minZ),
-      material,
-    );
-    m.position.set((box.minX + box.maxX) / 2, (box.minY + box.maxY) / 2, (box.minZ + box.maxZ) / 2);
-    m.castShadow = m.receiveShadow = true;
-    this.group.add(m);
-    return m;
-  }
-
-  private buildBoxMeshes(): void {
-    const mat = toonMaterial(0xa59a8c);
-    const cap = toonMaterial(0x7d6e60);
-    for (const b of this.boxes) {
-      const w = b.maxX - b.minX;
-      const h = b.maxY - b.minY;
-      const d = b.maxZ - b.minZ;
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-      m.position.set((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, (b.minZ + b.maxZ) / 2);
-      m.castShadow = m.receiveShadow = true;
-      this.group.add(m);
-      const top = new THREE.Mesh(new THREE.BoxGeometry(w + 0.2, 0.25, d + 0.2), cap);
-      top.position.set(m.position.x, b.maxY - 0.1, m.position.z);
-      top.castShadow = true;
-      this.group.add(top);
     }
   }
 
   private scatterTrees(): void {
     const rand = mulberry32(42);
+    const max = this.layout.maxTrees;
     const trunkGeo = new THREE.CylinderGeometry(0.18, 0.25, 1.6, 6);
     const leafGeo = new THREE.ConeGeometry(1.2, 2.8, 7);
-    const trunkMat = toonMaterial(0x6b4a2b);
-    const leafMat = toonMaterial(0x2f6b3a);
-    const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, 260);
-    const leaves = new THREE.InstancedMesh(leafGeo, leafMat, 260);
+    const trunks = new THREE.InstancedMesh(trunkGeo, toonMaterial(0x6b4a2b), max);
+    const leaves = new THREE.InstancedMesh(leafGeo, toonMaterial(0xffffff), max);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const s = new THREE.Vector3();
+    const tint = new THREE.Color();
     let count = 0;
-    for (let tries = 0; tries < 3000 && count < 260; tries++) {
-      const x = (rand() - 0.5) * (WORLD_LIMIT * 2 - 10);
-      const z = (rand() - 0.5) * (WORLD_LIMIT * 2 - 10);
-      if (Math.hypot(x - this.spawn.x, z - this.spawn.z) < 8) continue;
-      if (Math.hypot(x - this.homeSite.x, z - this.homeSite.z) < 11) continue;
-      if (this.slopeAt(x, z) > 0.5) continue;
-      if (this.groundAt(x, z, 1e9) - this.heightAt(x, z) > 0.1) continue; // not on boxes
+    const span = this.limit * 2 - 10;
+    for (let tries = 0; tries < max * 12 && count < max; tries++) {
+      const x = (rand() - 0.5) * span;
+      const z = (rand() - 0.5) * span;
       const y = this.heightAt(x, z);
+      if (rand() > this.layout.treeDensity(x, z, y)) continue;
+      if (this.slopeAt(x, z) > 0.5) continue;
+      if (this.groundAt(x, z, 1e9) - y > 0.1) continue; // not on boxes
       const k = 0.8 + rand() * 0.6;
       q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), rand() * Math.PI);
       s.set(k, k, k);
@@ -314,6 +335,9 @@ export class World {
       trunks.setMatrixAt(count, m);
       m.compose(new THREE.Vector3(x, y + (1.6 + 1.2) * k, z), q, s);
       leaves.setMatrixAt(count, m);
+      const region = this.layout.region(x, z).id;
+      tint.setHex(region === 'forest' ? 0x24522d : region === 'ruins' ? 0x6b6a3a : 0x2f6b3a);
+      leaves.setColorAt(count, tint);
       count++;
     }
     trunks.count = leaves.count = count;

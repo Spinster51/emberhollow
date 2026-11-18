@@ -13,7 +13,7 @@ Shift tap: dodge-roll · hold: sprint
 Left click: attack (click again mid-swing = combo)
 Right click: block, parry (mage: aim) · 1–4 skills
 Tab / middle click: lock-on · flick mouse to switch
-E pick up / use · I inventory · K skills
+E pick up / use · I inventory · K skills · M map
 Walk into a wall to climb · H hide help`;
 
 interface FloatText {
@@ -39,6 +39,10 @@ export class Hud {
   private floats: FloatText[] = [];
   private bars = new Map<Enemy, HTMLDivElement>();
   private reticle: HTMLDivElement;
+  private bannerEl!: HTMLDivElement;
+  private bannerTime = 0;
+  /** The full map screen (M) is open. */
+  mapOpen = false;
   private interact: HTMLDivElement;
   private feedBox: HTMLDivElement;
   private feedItems: { el: HTMLDivElement; age: number }[] = [];
@@ -80,7 +84,8 @@ export class Hud {
           stroke-dasharray="87.96" transform="rotate(-90 18 18)" stroke-linecap="butt" />
       </svg>
       <div class="prompt" id="prompt">Click to play</div>
-      <div class="toast" id="toast"></div>`;
+      <div class="toast" id="toast"></div>
+      <div class="banner" id="banner"><b></b><small></small></div>`;
     this.hpFill = root.querySelector('#hp-fill')!;
     this.hpText = root.querySelector('#hp-text')!;
     this.debug = root.querySelector('#debug')!;
@@ -91,6 +96,7 @@ export class Hud {
     this.prompt = root.querySelector('#prompt')!;
     this.toast = root.querySelector('#toast')!;
     this.interact = root.querySelector('#interact')!;
+    this.bannerEl = root.querySelector('#banner')!;
     this.feedBox = root.querySelector('#feed')!;
     this.goldText = root.querySelector('#gold')!;
     this.mpFill = root.querySelector('#mp-fill')!;
@@ -120,7 +126,13 @@ export class Hud {
 
     window.addEventListener('keydown', (e) => {
       if (e.code === 'KeyH') this.help.style.display = this.help.style.display === 'none' ? '' : 'none';
+      if (e.code === 'F3') {
+        e.preventDefault();
+        this.debug.style.display = this.debug.style.display === 'none' ? '' : 'none';
+      }
     });
+    // Debug panel: hidden in the real game (F3 shows it), visible in automated tests.
+    if (!new URLSearchParams(location.search).has('test')) this.debug.style.display = 'none';
   }
 
   update(p: Player, camera: THREE.Camera, dt: number, locked: boolean): void {
@@ -154,7 +166,16 @@ export class Hud {
       this.toastTime = 1.8;
     }
     this.toastTime -= dt;
+    this.bannerTime -= dt;
+    this.bannerEl.style.opacity = this.bannerTime > 0 ? '1' : '0';
     this.toast.style.opacity = this.toastTime > 0 ? '1' : '0';
+  }
+
+  /** Big region-name banner. */
+  banner(title: string, sub: string): void {
+    (this.bannerEl.querySelector('b') as HTMLElement).textContent = title;
+    (this.bannerEl.querySelector('small') as HTMLElement).textContent = sub;
+    this.bannerTime = 3;
   }
 
   /** Mana, XP, level, skill bar with cooldowns, buffs, tank counter meter, mage crosshair. */
@@ -291,12 +312,14 @@ export class Hud {
         this.root.appendChild(bar);
         this.bars.set(e, bar);
       }
-      const show = e.alive && (e === target || e.sinceHit < 4 || e.hp < e.stats.hp);
+      const near = e.pos.distanceTo(camera.position) < 60;
+      const show = e.alive && near && (e === target || e.sinceHit < 4 || e.hp < e.maxHp);
       const s = toScreen(e.pos.clone().setY(e.topY() + 0.35));
       bar.style.opacity = show && s.visible ? '1' : '0';
       bar.style.left = `${s.x}px`;
       bar.style.top = `${s.y}px`;
-      (bar.firstChild as HTMLDivElement).style.width = `${(e.hp / e.stats.hp) * 100}%`;
+      (bar.firstChild as HTMLDivElement).style.width = `${(e.hp / e.maxHp) * 100}%`;
+      bar.dataset.level = String(e.level);
     }
 
     if (target) {

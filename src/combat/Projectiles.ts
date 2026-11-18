@@ -5,7 +5,7 @@ import type { Enemies } from './Enemies';
 import type { Enemy } from './Enemy';
 import type { CombatFx } from './combat';
 
-export type ProjectileKind = 'bolt' | 'fireball' | 'knife' | 'meteor';
+export type ProjectileKind = 'bolt' | 'fireball' | 'knife' | 'meteor' | 'arrow' | 'orb';
 
 export interface ProjectileSpec {
   kind: ProjectileKind;
@@ -22,6 +22,8 @@ export interface ProjectileSpec {
   /** Seconds before it disappears. */
   life?: number;
   gravity?: number;
+  /** Enemy projectiles hurt the player instead of enemies. */
+  owner?: Enemy;
 }
 
 interface Projectile extends ProjectileSpec {
@@ -41,6 +43,8 @@ const LOOK: Record<ProjectileKind, { color: number; size: number }> = {
   fireball: { color: 0xff7a2a, size: 0.35 },
   knife: { color: 0xd8dde3, size: 0.1 },
   meteor: { color: 0xff5a1a, size: 0.9 },
+  arrow: { color: 0x8a5a33, size: 0.08 },
+  orb: { color: 0xb04aff, size: 0.28 },
 };
 
 /** Player projectiles (mage bolts and spells, thrown knives) and their explosions. */
@@ -54,8 +58,8 @@ export class Projectiles {
   spawn(spec: ProjectileSpec): void {
     const look = LOOK[spec.kind];
     const mesh =
-      spec.kind === 'knife'
-        ? new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.45), new THREE.MeshBasicMaterial({ color: look.color }))
+      spec.kind === 'knife' || spec.kind === 'arrow'
+        ? new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, spec.kind === 'arrow' ? 0.8 : 0.45), new THREE.MeshBasicMaterial({ color: look.color }))
         : new THREE.Mesh(new THREE.IcosahedronGeometry(look.size, 0), new THREE.MeshBasicMaterial({ color: look.color }));
     this.group.add(mesh);
     const p: Projectile = { life: 1.5, ...spec, pos: spec.from.clone(), age: 0, mesh };
@@ -71,6 +75,23 @@ export class Projectiles {
       p.pos.addScaledVector(p.vel, dt);
       let hit: Enemy | null = null;
       const r = LOOK[p.kind].size + 0.25;
+      if (p.owner) {
+        // Enemy shot: test against the player's body (a vertical segment).
+        const seg = p.pos.clone().sub(prev);
+        const c = player.pos.clone().setY(player.pos.y + 1.0);
+        const t = Math.max(0, Math.min(1, c.clone().sub(prev).dot(seg) / Math.max(seg.lengthSq(), 1e-9)));
+        const q = prev.clone().addScaledVector(seg, t);
+        const hitPlayer =
+          player.state !== 'dead' && Math.hypot(q.x - c.x, q.z - c.z) < 0.45 + r && q.y > player.pos.y - 0.1 && q.y < player.pos.y + 1.9;
+        if (hitPlayer) p.owner.projectileHit(player, prev);
+        if (hitPlayer || this.world.isSolid(p.pos, 0.02) || p.age > (p.life ?? 1.5)) {
+          if (p.kind === 'orb') this.blast(p.pos, 0.8, LOOK.orb.color);
+          this.remove(p);
+        } else {
+          this.sync(p);
+        }
+        continue;
+      }
       for (const e of enemies.list) {
         if (!e.alive) continue;
         // Distance from the enemy body to the segment moved this step (no tunnelling).
@@ -78,7 +99,7 @@ export class Projectiles {
         const seg = p.pos.clone().sub(prev);
         const t = Math.max(0, Math.min(1, c.clone().sub(prev).dot(seg) / Math.max(seg.lengthSq(), 1e-9)));
         const closest = prev.clone().addScaledVector(seg, t);
-        const bodyR = e.stats.radius + (e.kind === 'bandit' ? 0.4 : 0.1);
+        const bodyR = e.stats.radius + (e.stats.centreY > 1 ? 0.4 : 0.1);
         if (closest.distanceTo(c) < bodyR + r) {
           hit = e;
           p.pos.copy(closest);
