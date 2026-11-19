@@ -27,7 +27,8 @@ const errors = [];
 const MISSING_MODEL = 'models/chars/missing-test.glb';
 const MISSING_ENEMY = 'models/enemies/missing-test.glb';
 const MISSING_ITEM = 'models/items/missing-test.glb';
-const MISSING = [MISSING_MODEL, MISSING_ENEMY, MISSING_ITEM];
+const MISSING_FURNITURE = 'models/home/missing-test.glb';
+const MISSING = [MISSING_MODEL, MISSING_ENEMY, MISSING_ITEM, MISSING_FURNITURE];
 const expectedError = (m) =>
   m.text().startsWith('Failed to load resource') && MISSING.some((f) => (m.location().url ?? '').endsWith(`/${f}`));
 page.on('pageerror', (e) => errors.push(String(e)));
@@ -985,6 +986,98 @@ check('E at the chest opens the storage chest', s.chestLabel === 'Open storage c
 check('items move between bag and chest', s.stored && s.back);
 check('weapon mount shows a weapon; refuses gauntlets', s.shown && s.wrongSlot === false && /Weapon mount/.test(s.mountLabel ?? ''), s.mountLabel);
 check('armour stand shows armour; items can be taken back', s.stand && s.taken);
+
+// 26b. Furniture and home fixtures (milestone 8): every catalogue piece and fixture shows its model once the
+// file loads (copies share geometry and materials), a missing file keeps the procedural piece, racks and mounts
+// hold items at the same anchors, the chest collider and the prompts stay put, and an old save with placed
+// furniture loads with the models.
+s = await run(async (miss) => {
+  const A = window.art;
+  const g = window.game;
+  const h = g.home;
+  await A.modelsSettled();
+  const out = { wrong: [] };
+  const shows = (m, node) => m.userData.model === true && m.children[0]?.name === `furniture:${node}` && !!m.children[0].getObjectByName(node);
+  for (const t of Object.keys(A.FURNITURE)) if (!shows(A.buildFurniture(t), A.FURNITURE_ART[t])) out.wrong.push(t);
+  for (const k of Object.keys(A.FIXTURE_ART)) if (!shows(A.buildFixture(k), A.FIXTURE_ART[k])) out.wrong.push(k);
+  out.pieces = Object.keys(A.FURNITURE).length + Object.keys(A.FIXTURE_ART).length;
+  // The home's own 16 fixtures (8 kinds) show their models.
+  out.home = h.fixtures.filter((f) => shows(f.group, A.FIXTURE_ART[f.kind])).length;
+  out.homeN = h.fixtures.length;
+  out.kinds = new Set(h.fixtures.map((f) => f.kind)).size;
+  // Two copies share the file's geometry and material.
+  const mesh = (g) => { let m = null; g.traverse((o) => { if (!m && o.isMesh && !o.name.endsWith('_outline')) m = o; }); return m; };
+  const t1 = mesh(A.buildFurniture('table'));
+  const t2 = mesh(A.buildFurniture('table'));
+  const bed = mesh(A.buildFixture('bed'));
+  out.shared = t1.geometry === t2.geometry && t1.material === t2.material && t1.material === bed.material;
+  // The placement ghost shows the model, with its ring.
+  g.adventure.startPlacing('lantern');
+  const ghost = g.adventure.placing?.ghost;
+  out.ghost = !!ghost && shows(ghost.children[0], 'Lantern') && ghost.children[1] === g.adventure.placing.ring;
+  g.adventure.stopPlacing();
+  // A missing file: the procedural piece stays, nothing throws.
+  let threw = '';
+  let mf = null;
+  let mx = null;
+  try {
+    mf = A.buildFurniture('bookshelf', miss);
+    mx = A.buildFixture('chest', miss);
+    await A.modelsSettled();
+  } catch (e) {
+    threw = String(e);
+  }
+  out.missing = { piece: mf?.userData.model, fixture: mx?.userData.model, shown: [mf?.children[0]?.name, mx?.children[0]?.name].join(), state: A.modelState(miss), threw };
+  // Anchors relative to the house centre on the floor: as the procedural home had them.
+  const c = g.world.homeSite;
+  const V = g.player.pos.constructor;
+  const rel = (o) => { const w = o.getWorldPosition(new V()); return [w.x - c.x, w.y - h.floorY, w.z - c.z].map((v) => +v.toFixed(3)); };
+  out.holders = h.spots.map((sp) => rel(sp.holder));
+  out.spotPos = h.spots.map((sp) => [sp.pos.x - c.x, sp.pos.y - h.floorY, sp.pos.z - c.z].map((v) => +v.toFixed(3)));
+  // Each mount and stand fixture stands where its spot is.
+  out.racksAt = h.fixtures.filter((f) => f.kind === 'mount' || f.kind === 'stand').every((f) => h.spots.some((sp) => {
+    const a = f.group.getWorldPosition(new V());
+    return Math.hypot(a.x - sp.pos.x, a.z - sp.pos.z) < 0.06 && Math.abs(a.y - h.floorY) < 1e-6;
+  }));
+  // A displayed sword hangs at the same spot as before (holder + the mount's own hang offset).
+  const mount = h.spots[0];
+  const keep = mount.item;
+  mount.item = window.items.makeItem('ironSword', 'rare');
+  mount.onChange();
+  out.sword = rel(mount.holder.children[0]);
+  mount.item = keep;
+  mount.onChange();
+  // Prompts and the chest's collider.
+  const fixedAt = (p) => [p.x - c.x, p.y - h.floorY, p.z - c.z].map((v) => +v.toFixed(3));
+  out.prompts = [h.chestPos, h.bookPos, h.bedPos, h.cratePos, h.benchPos].map(fixedAt);
+  const b = h.chestBox;
+  out.chestBox = [b.minX - c.x, b.maxX - c.x, b.minY - h.floorY, b.maxY - h.floorY, b.minZ - c.z, b.maxZ - c.z].map((v) => +v.toFixed(3));
+  out.chestSolid = g.world.hasCollider(b);
+  // An old save (same format as before the models) with every piece placed loads with the models.
+  const before = h.save();
+  const types = Object.keys(A.FURNITURE);
+  const old = { owned: h.owned, expanded: h.expanded, chest: [], displays: [], stock: { chair: 2 }, placed: types.map((type, i) => ({ type, x: c.x - 3.5 + i, z: c.z + (i % 2 ? 1.5 : -1.5), rot: (i * Math.PI) / 2 })) };
+  h.load(JSON.parse(JSON.stringify(old)));
+  await A.modelsSettled();
+  out.loaded = h.placed.map((p) => shows(p.mesh, A.FURNITURE_ART[p.type]) && Math.abs(p.mesh.position.x - p.x) < 1e-6 && Math.abs(p.mesh.position.z - p.z) < 1e-6 && Math.abs(p.mesh.rotation.y - p.rot) < 1e-6).filter(Boolean).length;
+  out.resaved = JSON.stringify(h.save().placed) === JSON.stringify(old.placed) && h.stock.chair === 2;
+  h.load(before);
+  return out;
+}, MISSING_FURNITURE);
+const near = (a, b) => a.length === b.length && a.every((v, i) => (Array.isArray(v) ? near(v, b[i]) : Math.abs(v - b[i]) < 1e-3));
+check('furniture: every catalogue piece and home fixture shows its model (16), the home\'s 16 fixtures and the placement ghost too, copies share geometry and material',
+  s.wrong.length === 0 && s.pieces === 16 && s.home === 16 && s.homeN === 16 && s.kinds === 8 && s.shared && s.ghost, JSON.stringify({ wrong: s.wrong, home: s.home, kinds: s.kinds, shared: s.shared, ghost: s.ghost }));
+check('furniture: a missing model file keeps the procedural piece without throwing',
+  s.missing.piece === false && s.missing.fixture === false && s.missing.shown === 'furniture:procedural,furniture:procedural' && s.missing.state === 'failed' && !s.missing.threw, JSON.stringify(s.missing));
+check('furniture: rack, mount and table anchors are where they were, so displayed items sit at the same spots',
+  near(s.holders, [[-3.6, 1.9, -4.5], [-2, 1.9, -4.5], [2.4, 1.9, -4.5], [5, 0, -2], [5, 0, 1], [-4.7, 1.05, 3.6], [-3.8, 1.9, -11.5], [0, 1.9, -11.5], [3.8, 1.9, -11.5], [-4.8, 0, -8.5], [4.8, 0, -8.5]])
+    && near(s.spotPos.slice(0, 3), [[-3.6, 0, -4.65], [-2, 0, -4.65], [2.4, 0, -4.65]]) && s.racksAt && near(s.sword, [-3.6, 1.35, -4.5]),
+  JSON.stringify({ holders: s.holders, sword: s.sword, racksAt: s.racksAt }));
+check('furniture: the chest collider and the chest, book, bed, crate and workbench prompts are unchanged',
+  near(s.prompts, [[-4.6, 0, -4.1], [-5, 0, 0.5], [4.7, 0, 3.4], [1.6, 0, 4], [-2.2, 0, 3.8]]) && near(s.chestBox, [-5.15, -4.05, 0, 0.7, -4.45, -3.75]) && s.chestSolid,
+  JSON.stringify({ prompts: s.prompts, chestBox: s.chestBox }));
+check('furniture: an old save with placed furniture loads every piece with its model, in place, and saves back the same',
+  s.loaded === 8 && s.resaved, JSON.stringify({ loaded: s.loaded, resaved: s.resaved }));
 
 // ================================================================ crafting (milestone 7)
 const cr = await run(() => {
@@ -2283,8 +2376,50 @@ s = await run2(() => {
 });
 check('sleeping in your bed heals and sets respawn', s.slept && /Sleep/.test(s.bedLabel ?? ''), s.bedLabel);
 check('buy furniture and place it in your home', s.stock === 1 && s.placed === 1 && !s.placing, JSON.stringify(s));
+
 check('the expansion opens the back room', !s.backBefore && s.backAfter);
 check('spire chests hold rare+ loot and open once', s.chestLabel === 'Open chest' && /^(rare|epic|legendary),/.test(s.loot) && !s.again, `${s.chestLabel} ${s.loot}`);
+
+// 39b. The carpenter's shop and the furniture crate show a picture of each piece drawn from its model (milestone 8).
+s = await run2(async () => {
+  const g = window.game;
+  const a = g.adventure;
+  const A = window.art;
+  await A.modelsSettled();
+  const types = Object.keys(A.FURNITURE);
+  const pics = () => [...document.querySelectorAll('.dialog-options img.dialog-icon')].map((i) => i.getAttribute('src'));
+  const want = types.map((t) => A.furnitureIcon(g.renderer, t));
+  g.player.inv.gold = 1000;
+  a.town.shop();
+  const shop = pics();
+  for (const t of types) g.home.buy(t);
+  a.furnish();
+  const crate = pics();
+  a.dialog.close();
+  for (const t of types) g.home.stock[t]--;
+  return {
+    models: want.filter((w) => w.model && w.src.startsWith('data:image/png')).length,
+    shop: shop.length === types.length && shop.every((src, i) => src === want[i].src),
+    crate: crate.length === types.length && want.every((w) => crate.includes(w.src)),
+    // The picture is not empty: some pixels are drawn (alpha) — checked on one decoded image.
+    drawn: await new Promise((res) => {
+      const im = new Image();
+      im.onload = () => {
+        const cv = document.createElement('canvas');
+        cv.width = im.width; cv.height = im.height;
+        const cx = cv.getContext('2d');
+        cx.drawImage(im, 0, 0);
+        const d = cx.getImageData(0, 0, im.width, im.height).data;
+        let n = 0;
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+        res(n / (im.width * im.height));
+      };
+      im.src = want[0].src;
+    }),
+  };
+});
+check('the furniture shop and the crate show a picture of every piece drawn from its model',
+  s.models === 8 && s.shop && s.crate && s.drawn > 0.1, JSON.stringify(s));
 
 // 40. Saving: 4 slots in IndexedDB, load restores everything, export format validates.
 s = await run2(async () => {

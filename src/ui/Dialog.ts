@@ -5,6 +5,8 @@ export interface DialogOption {
   disabled?: boolean;
   /** Keep the dialog open after the action (it usually re-shows itself). */
   keepOpen?: boolean;
+  /** A small picture shown in the button (image URL), e.g. a furniture piece. */
+  icon?: string;
 }
 
 export interface DialogSpec {
@@ -54,10 +56,17 @@ export class Dialog {
     text.className = 'dialog-text';
     text.innerHTML = spec.text;
     const opts = document.createElement('div');
-    opts.className = 'dialog-options';
+    opts.className = spec.options.some((o) => o.icon) ? 'dialog-options has-icons' : 'dialog-options';
     spec.options.forEach((o, i) => {
       const b = document.createElement('button');
-      b.textContent = `${i + 1}. ${o.label}`;
+      if (o.icon) {
+        const img = document.createElement('img');
+        img.className = 'dialog-icon';
+        img.src = o.icon;
+        img.alt = '';
+        b.classList.add('with-icon');
+        b.append(img, `${i + 1}. ${o.label}`);
+      } else b.textContent = `${i + 1}. ${o.label}`;
       b.disabled = !!o.disabled;
       b.addEventListener('click', () => this.choose(i));
       opts.appendChild(b);

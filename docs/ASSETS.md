@@ -54,22 +54,24 @@ Locomotion: every stride is measured from the planted soles (`Stride` in `assets
 - [ ] Gold coin
 - [ ] Material pickup (one gem or bag, tinted per material; 10 materials)
 
-## Home base and furniture (about 15 models)
-- [ ] Table
-- [ ] Chair
-- [ ] Bookshelf
-- [ ] Rug
-- [ ] Potted plant
-- [ ] Standing lantern
-- [ ] Banner
-- [ ] Barrel
-- [ ] Mount (horse or similar)
-- [ ] Bed
-- [ ] Training book
-- [ ] Storage chest
-- [ ] Display stand (gear rack)
-- [ ] Trinket table
-- [ ] Furniture crate
+## Home base and furniture (16 models)
+All in `public/models/home/furniture.glb` (about 360 KB: 16 nodes, about 9,500 triangles, one 512 px atlas made of the KayKit Dungeon Remastered, Furniture Bits and Halloween Bits palettes; normals and UVs quantized). Node names and placement in `FURNITURE_ART` / `FIXTURE_ART` (`src/art/assets.ts`). Every node is in metres with its origin at the piece's anchor and faces the way the procedural piece did, so placed furniture, saves, rack anchors, prompts and the chest collider are unchanged. Each piece shows its procedural model until the file loads and keeps it if the file fails; copies share the file's geometry and one toon material (three glow variants: the training book, the anvil, the lantern glass). The carpenter's shop and the furniture crate show a picture of each piece rendered from its model.
+- [x] Table: KayKit Dungeon `table_medium`, shortened along its planks to 1.4 × 0.9 m and raised to 0.83 m.
+- [x] Chair: KayKit Dungeon `chair`.
+- [x] Bookshelf: case built for the game, filled with KayKit Furniture Bits `book_set` / `book_single`.
+- [x] Rug: built for the game (red and gold, cream tassels).
+- [x] Potted plant (fern): KayKit Furniture Bits cactus pot, taller; fronds with notched leaflets built for the game.
+- [x] Standing lantern: KayKit Halloween Bits `lantern_standing` (glowing glass) on a post built for the game.
+- [x] Banner: KayKit Dungeon `banner_shield_red`, crest recoloured ember, on a T-stand built for the game.
+- [x] Barrel: KayKit Dungeon `barrel_small`.
+- [x] Weapon mount (wall rack): built for the game (plank board, iron pegs and nails).
+- [x] Bed: KayKit Dungeon `bed_frame`, blanket recoloured blue.
+- [x] Training book: lectern and open glowing book built for the game.
+- [x] Storage chest: KayKit Dungeon `chest`.
+- [x] Display stand (armour stand): built for the game.
+- [x] Trinket table: KayKit Dungeon `table_small`.
+- [x] Furniture crate: KayKit Dungeon `box_small`.
+- [x] Workbench: KayKit Dungeon `table_medium` as the bench; anvil, hammer and tongs built for the game (the anvil keeps its ember glow).
 
 ## World and dungeon (about 12 models)
 - [ ] Exploration chest

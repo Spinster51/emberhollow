@@ -12,6 +12,7 @@ import { bumpUid, rollItem, type Item, type Rarity } from '../items/items';
 import { sound } from '../core/sound';
 import type { Interactable } from '../loot/Loot';
 import { buildFurniture, FURNITURE } from '../home/furniture';
+import { furnitureIcon } from '../home/furnitureIcons';
 import type { ClassId } from '../classes/classes';
 import type { Region } from '../world/layouts';
 import { Dungeon } from '../world/Dungeon';
@@ -84,6 +85,7 @@ export class Adventure {
       },
       turnIn: (q) => this.turnIn(q),
       message: (t) => game.player.events.push(t),
+      furnitureIcon: (type) => furnitureIcon(game.renderer, type).src,
     });
     game.scene.add(this.campfires.group, this.chests.group, this.town.group);
     if (world.layout.dungeon) {
@@ -367,13 +369,18 @@ export class Adventure {
       text: owned.length
         ? '<p>Pick a piece, walk to where you want it and click (or E) to place it. R rotates, Esc stops. Press E next to a placed piece to pick it back up.</p>'
         : '<p>The crate is empty. Carpenter Bram in the square sells furniture.</p>',
-      options: [...owned.map(([type, n]) => ({ label: `${FURNITURE[type].name} (${n})`, action: () => this.startPlacing(type) })), { label: 'Close' }],
+      options: [
+        ...owned.map(([type, n]) => ({ label: `${FURNITURE[type].name} (${n})`, icon: furnitureIcon(this.game.renderer, type).src, action: () => this.startPlacing(type) })),
+        { label: 'Close' },
+      ],
     });
   }
 
   startPlacing(type: string): void {
     this.stopPlacing();
-    const ghost = buildFurniture(type);
+    // The piece sits in its own group: it swaps its procedural children for the model when the file loads.
+    const ghost = new THREE.Group();
+    ghost.add(buildFurniture(type));
     const ring = new THREE.Mesh(
       new THREE.RingGeometry(0.6, 0.75, 20).rotateX(-Math.PI / 2),
       new THREE.MeshBasicMaterial({ color: 0x7be06b, transparent: true, opacity: 0.8 }),

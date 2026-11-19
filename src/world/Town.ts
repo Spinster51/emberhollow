@@ -38,6 +38,8 @@ export interface TownContext {
   /** Consume materials/gold and give rewards. */
   turnIn(q: QuestDef): void;
   message(text: string): void;
+  /** A picture of a furniture piece for the shop (image URL). */
+  furnitureIcon?(type: string): string;
 }
 
 interface Npc {
@@ -156,6 +158,7 @@ export class Town {
   shop(): void {
     const opts: DialogOption[] = Object.entries(FURNITURE).map(([type, f]) => ({
       label: `${f.name} — ${f.price} gold${this.ctx.home.stock[type] ? ` (have ${this.ctx.home.stock[type]})` : ''}`,
+      icon: this.ctx.furnitureIcon?.(type),
       disabled: this.ctx.gold() < f.price,
       keepOpen: true,
       action: () => {

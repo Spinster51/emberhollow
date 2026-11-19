@@ -787,6 +787,38 @@ body {
   cursor: default;
 }
 
+/* Options with pictures (furniture shop and crate): two columns; plain options span both. */
+.dialog-options.has-icons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.dialog-options.has-icons button:not(.with-icon) {
+  grid-column: 1 / -1;
+}
+
+.dialog-options button.with-icon {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px 3px 4px;
+}
+
+.dialog-icon {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  image-rendering: pixelated;
+  background: rgba(255, 236, 200, 0.06);
+  border-radius: 3px;
+}
+
+@media (max-width: 480px) {
+  .dialog-options.has-icons {
+    grid-template-columns: 1fr;
+  }
+}
+
 .slots .classcard {
   cursor: default;
   display: flex;

@@ -486,3 +486,29 @@ export const HEAD_ART: Partial<Record<Look, { file: string; node: string }>> = {
   helm: { file: HUMANOID.clips, node: HUMANOID.helm },
   cap: { file: ITEM_FILE, node: 'Cap' },
 };
+
+// ---------------------------------------------------------------- furniture and home fixtures (milestone 8)
+
+/**
+ * Catalogue furniture and the home's fixtures, one node per piece (KayKit Dungeon Remastered, Furniture Bits
+ * and Halloween Bits, and pieces built for the game from them; see CREDITS.md). Every node is in metres with
+ * its origin on the floor at the piece's anchor, facing as the procedural piece it replaces (furniture.ts),
+ * so it drops in with no transform. All share one 512 px palette atlas (three glow variants for the book,
+ * anvil and lantern glass).
+ */
+export const FURNITURE_FILE = 'models/home/furniture.glb';
+
+/** Catalogue furniture (FURNITURE ids) → node. */
+export const FURNITURE_ART: Record<string, string> = {
+  table: 'Table', chair: 'Chair', bookshelf: 'Bookshelf', rug: 'Rug', plant: 'Plant', lantern: 'Lantern', banner: 'Banner', barrel: 'Barrel',
+};
+
+export type FixtureKind = 'chest' | 'mount' | 'stand' | 'trinketTable' | 'lectern' | 'bed' | 'crate' | 'workbench';
+
+/** Home fixtures → node. The weapon mount's origin is on the wall face (the board stands out along +z). */
+export const FIXTURE_ART: Record<FixtureKind, string> = {
+  chest: 'Chest', mount: 'WeaponMount', stand: 'ArmourStand', trinketTable: 'TrinketTable', lectern: 'Lectern', bed: 'Bed', crate: 'Crate', workbench: 'Workbench',
+};
+
+/** Outline width (m) per node, default 0.03 as the procedural pieces; the rug lies flat and has none. */
+export const FURNITURE_OUTLINE: Record<string, number> = { Rug: 0 };

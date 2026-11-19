@@ -1,12 +1,13 @@
 import * as THREE from 'three';
-import { addOutline, toonMaterial } from '../core/toon';
+import { toonMaterial } from '../core/toon';
 import { buildItemMesh } from '../items/ItemMesh';
 import { CHEST_SIZE } from '../items/Inventory';
 import { lookOf, type Item, type Look, type Slot } from '../items/items';
 import type { Interactable } from '../loot/Loot';
 import type { DisplaySpot, InventoryUI } from '../ui/InventoryUI';
 import type { Box, World } from '../world/World';
-import { FURNITURE, buildFurniture } from './furniture';
+import type { FixtureKind } from '../art/assets';
+import { FURNITURE, buildFixture, buildFurniture } from './furniture';
 
 interface Spot extends DisplaySpot {
   pos: THREE.Vector3;
@@ -70,6 +71,10 @@ export class Home {
   /** Bought furniture not yet placed, by type. */
   readonly stock: Record<string, number> = {};
   readonly placed: PlacedFurniture[] = [];
+  /** The fixtures' models (model or procedural placeholder, see buildFixture), placed at their anchors. */
+  readonly fixtures: { kind: FixtureKind; group: THREE.Group; backRoom: boolean }[] = [];
+  /** The storage chest's collider (same box the chest always had). */
+  readonly chestBox: Box;
   /** Inside bounds of the main room and the back room (for furniture and "inside" checks). */
   private main: { x0: number; x1: number; z0: number; z1: number };
   private back: { x0: number; x1: number; z0: number; z1: number };
@@ -139,97 +144,63 @@ export class Home {
     lamp.position.set(c.x, fy + 2.6, c.z);
     this.group.add(lamp);
 
-    // Storage chest against the back-left of the main room.
+    // Storage chest against the back-left of the main room (the collider is the box it always had).
     this.chestPos = new THREE.Vector3(x0 + 1.4, fy, z0 + 0.9);
-    solid(this.chestPos.x - 0.55, this.chestPos.x + 0.55, fy, fy + 0.7, this.chestPos.z - 0.35, this.chestPos.z + 0.35, toonMaterial(0x7a4a26));
-    const lid = new THREE.Mesh(new THREE.BoxGeometry(1.16, 0.12, 0.76), toonMaterial(0xc9a13b));
-    lid.position.set(this.chestPos.x, fy + 0.72, this.chestPos.z);
-    addOutline(lid, 0.03);
-    this.group.add(lid);
+    this.chestBox = { minX: this.chestPos.x - 0.55, maxX: this.chestPos.x + 0.55, minY: fy, maxY: fy + 0.7, minZ: this.chestPos.z - 0.35, maxZ: this.chestPos.z + 0.35 };
+    world.addCollider(this.chestBox);
+    this.addFixture('chest', this.chestPos);
 
     // Weapon mounts on the main room's back wall (either side of the doorway).
-    [c.x - 3.6, c.x - 2.0, c.x + 2.4].forEach((x, i) => this.addMount(x, z0 + T, `Weapon mount ${i + 1}`, false, beam, 1));
+    [c.x - 3.6, c.x - 2.0, c.x + 2.4].forEach((x, i) => this.addMount(x, z0 + T, `Weapon mount ${i + 1}`, false));
     // Armour stands along the right wall.
-    for (let i = 0; i < 2; i++) this.addStand(x1 - 1.0, c.z - 2 + i * 3, `Armour stand ${i + 1}`, false, beam);
+    for (let i = 0; i < 2; i++) this.addStand(x1 - 1.0, c.z - 2 + i * 3, `Armour stand ${i + 1}`, false);
 
     // Trinket table by the door.
     const tx = x0 + 1.3;
     const tz = z1 - 1.4;
-    const top = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.1, 0.7), plank);
-    top.position.set(tx, fy + 0.8, tz);
-    addOutline(top, 0.03);
-    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.8, 0.12), beam);
-    leg.position.set(tx, fy + 0.4, tz);
-    this.group.add(top, leg);
+    this.addFixture('trinketTable', new THREE.Vector3(tx, fy, tz));
     this.addSpot('table', 'Trinket table', ['ring', 'amulet'], new THREE.Vector3(tx, fy, tz), new THREE.Vector3(tx, fy + 1.05, tz), false);
 
     // Training book on a lectern by the left wall.
     this.bookPos = new THREE.Vector3(x0 + 1.0, fy, c.z + 0.5);
-    const lectern = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.0, 0.5), beam);
-    lectern.position.set(this.bookPos.x, fy + 0.5, this.bookPos.z);
-    const book = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.1, 0.4), toonMaterial(0x4a6fb0, { emissive: 0x2a4a90, emissiveIntensity: 0.4 }));
-    book.position.set(this.bookPos.x, fy + 1.05, this.bookPos.z);
-    book.rotation.z = 0.25;
-    addOutline(book, 0.03);
-    this.group.add(lectern, book);
+    this.addFixture('lectern', this.bookPos);
 
     // Bed in the front-right corner.
     this.bedPos = new THREE.Vector3(x1 - 1.3, fy, z1 - 1.6);
-    const frame = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.4, 2.2), beam);
-    frame.position.set(this.bedPos.x, fy + 0.2, this.bedPos.z);
-    const quilt = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.18, 1.6), toonMaterial(0x3f6fb5));
-    quilt.position.set(this.bedPos.x, fy + 0.48, this.bedPos.z + 0.25);
-    const pillow = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.16, 0.4), toonMaterial(0xf2ead2));
-    pillow.position.set(this.bedPos.x, fy + 0.48, this.bedPos.z - 0.8);
-    for (const m of [frame, quilt, pillow]) {
-      m.castShadow = true;
-      addOutline(m, 0.03);
-    }
-    this.group.add(frame, quilt, pillow);
+    this.addFixture('bed', this.bedPos);
 
     // Furniture crate by the entrance: open it to place furniture you bought.
     this.cratePos = new THREE.Vector3(c.x + 1.6, fy, z1 - 1.0);
-    const crate = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.6, 0.7), toonMaterial(0xb08a5a));
-    crate.position.set(this.cratePos.x, fy + 0.3, this.cratePos.z);
-    addOutline(crate, 0.03);
-    this.group.add(crate);
+    this.addFixture('crate', this.cratePos);
 
-    // Workbench on the left wall: an anvil-style bench with a warm glow (salvage, upgrade, re-roll).
+    // Workbench by the front wall: an anvil on a bench with a warm glow (salvage, upgrade, re-roll).
     this.benchPos = new THREE.Vector3(c.x - 2.2, fy, z1 - 1.2);
-    const bench = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.9, 0.8), beam);
-    bench.position.set(this.benchPos.x, fy + 0.45, this.benchPos.z);
-    const anvil = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.3, 0.5), toonMaterial(0x5a5f6b, { emissive: 0xff6a20, emissiveIntensity: 0.25 }));
-    anvil.position.set(this.benchPos.x, fy + 1.05, this.benchPos.z);
-    for (const m of [bench, anvil]) {
-      m.castShadow = true;
-      addOutline(m, 0.03);
-    }
-    this.group.add(bench, anvil);
+    this.addFixture('workbench', this.benchPos);
 
     // Back room: more mounts and stands (hidden behind its door until the expansion).
     this.group.add(this.backRoomGroup);
-    [c.x - 3.8, c.x, c.x + 3.8].forEach((x, i) => this.addMount(x, zb + T, `Back room mount ${i + 1}`, true, beam, 3));
-    this.addStand(x0 + 1.2, zb + 3.5, 'Back room stand 1', true, beam);
-    this.addStand(x1 - 1.2, zb + 3.5, 'Back room stand 2', true, beam);
+    [c.x - 3.8, c.x, c.x + 3.8].forEach((x, i) => this.addMount(x, zb + T, `Back room mount ${i + 1}`, true));
+    this.addStand(x0 + 1.2, zb + 3.5, 'Back room stand 1', true);
+    this.addStand(x1 - 1.2, zb + 3.5, 'Back room stand 2', true);
   }
 
-  private addMount(x: number, wallZ: number, name: string, back: boolean, beam: THREE.Material, _n: number): void {
+  /** A fixture's model (or its procedural placeholder until the furniture file loads) at its anchor. */
+  private addFixture(kind: FixtureKind, at: THREE.Vector3, backRoom = false): void {
+    const group = buildFixture(kind);
+    group.position.copy(at);
+    (backRoom ? this.backRoomGroup : this.group).add(group);
+    this.fixtures.push({ kind, group, backRoom });
+  }
+
+  private addMount(x: number, wallZ: number, name: string, back: boolean): void {
     const fy = this.floorY;
-    const board = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.5, 0.08), beam);
-    board.position.set(x, fy + 1.9, wallZ + 0.04);
-    (back ? this.backRoomGroup : this.group).add(board);
+    this.addFixture('mount', new THREE.Vector3(x, fy, wallZ), back);
     this.addSpot('mount', name, ['weapon', 'offhand'], new THREE.Vector3(x, fy, wallZ + 0.05), new THREE.Vector3(x, fy + 1.9, wallZ + 0.2), back);
   }
 
-  private addStand(x: number, z: number, name: string, back: boolean, beam: THREE.Material): void {
+  private addStand(x: number, z: number, name: string, back: boolean): void {
     const fy = this.floorY;
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.7, 6), beam);
-    pole.position.set(x, fy + 0.85, z);
-    const arms = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.8), beam);
-    arms.position.set(x, fy + 1.35, z);
-    const foot = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.08, 0.6), beam);
-    foot.position.set(x, fy + 0.04, z);
-    (back ? this.backRoomGroup : this.group).add(pole, arms, foot);
+    this.addFixture('stand', new THREE.Vector3(x, fy, z), back);
     this.addSpot('stand', name, ['helmet', 'chest', 'gloves', 'boots'], new THREE.Vector3(x, fy, z), new THREE.Vector3(x, fy, z), back);
   }
 

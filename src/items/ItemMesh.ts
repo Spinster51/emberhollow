@@ -100,9 +100,15 @@ export function itemModel(item: Item, art: ItemArt = itemArt(item)): THREE.Objec
 /**
  * A group that shows `fallback()` until `file` has loaded, then `model()` in its place; it keeps the
  * fallback if the file fails (or `model()` gives null). `userData.model` says which is shown. The
- * fallback (a procedural item: its own geometry and toon materials) is freed when the model replaces it.
+ * fallback (a procedural piece: its own geometry and toon materials) is freed when the model replaces it.
+ * `load` fetches the file (furniture passes its own, for its outline widths).
  */
-export function lazyModel(file: string, model: () => THREE.Object3D | null, fallback: () => THREE.Object3D): THREE.Group {
+export function lazyModel(
+  file: string,
+  model: () => THREE.Object3D | null,
+  fallback: () => THREE.Object3D,
+  load: (file: string) => Promise<unknown> = loadItemFile,
+): THREE.Group {
   const g = new THREE.Group();
   const show = (o: THREE.Object3D, isModel: boolean) => {
     g.clear();
@@ -118,7 +124,7 @@ export function lazyModel(file: string, model: () => THREE.Object3D | null, fall
   const placeholder = fallback();
   show(placeholder, false);
   if (state === 'none' || state === 'loading') {
-    loadItemFile(file).then(
+    load(file).then(
       () => {
         const late = model();
         if (!late) return;
