@@ -4,32 +4,22 @@ Every model the game needs, for the art pass (milestone 8). Tick a box when a CC
 
 Rules: CC0 preferred (Quaternius, KayKit, Kenney, Poly Haven); CC-BY allowed with a credit in `CREDITS.md` (personal game, agreed in M8). Poly Pizza stays off. Use glTF/GLB. Items marked *tint* share one model with a colour change.
 
-## Weapons (6 models)
-- [ ] Sword (Rusty, Iron; Emberfang uses a tint)
-- [ ] Greatsword
-- [ ] Mace (Rusty, Flanged)
-- [ ] Staff (Oak, Runed; Cinderstaff uses a tint)
-- [ ] Daggers pair (Rusty, Steel; Bloodfangs uses a tint)
-- [ ] Parrying dagger
-
-## Off-hand (3 models)
-- [ ] Wooden shield
-- [ ] Iron shield
-- [ ] Spell tome
-
-## Armour (8 models)
-- [ ] Leather cap
-- [ ] Iron helm
-- [ ] Padded tunic
-- [ ] Chainmail
-- [ ] Leather gloves
-- [ ] Gauntlets
-- [ ] Leather boots
-- [ ] Iron greaves
-
-## Jewellery (2 models)
-- [ ] Ring
-- [ ] Amulet (Bone Charm)
+## Items (milestone 8): weapons, off-hands, armour, jewellery
+All in `public/models/items/items.glb` (426 KB: 20 models, three 256 px KayKit atlases and one 256 px JPEG) unless noted; placements in `ITEM_ART` (`src/art/assets.ts`). Every item shows its procedural model until its file loads, and keeps it if the file fails. Copies share the file's geometry and one material per (source material, rarity, tint, glow), so loot and racks stay cheap. The rarity glow is the material's emissive (0.75 of the procedural strength, so the model's colours still show). KayKit props sit in item space exactly as the pack holds them on its hand slots, so the pack's clips grip them as designed.
+- [x] Sword: Rusty = KayKit Skeletons `Skeleton_Blade` (the skeletons' own `models/enemies/skeleton_blade.glb`, reused); Iron = KayKit `1H_Sword`; Emberfang = "Autumn Sword" by SimberGI (CC BY 4.0), decimated, glow baked into its colour map.
+- [x] Greatsword: KayKit `2H_Sword`.
+- [x] Mace: Rusty (studded round head) and Flanged, both made for the game in Blender with the KayKit palette; Ember Maul = the flanged mace tinted ember with a glow.
+- [x] Staff: Oak = made for the game (gnarled shaft, amber gem); Runed = KayKit `2H_Staff`; Cinderstaff = KayKit Skeletons `Skeleton_Staff` (reused file), tinted ember with a glow.
+- [x] Daggers: KayKit `Knife` (the left one turned as the pack holds its off-hand knife); Rusty = rust tint; Bloodfangs = red tint with a glow.
+- [x] Parrying dagger: KayKit `1H_Sword` at 55% (a short sword with a broad guard).
+- [x] Wooden shield: KayKit `Round_Shield`.
+- [x] Iron shield: KayKit `Spike_Shield`, its wooden face re-mapped to the palette's dark iron.
+- [x] Spell tome: KayKit `Spellbook` (closed, pages inside the covers), at the tome's own rest in the left fist. The procedural tome (while loading) has its pages inside its covers too.
+- [x] Leather cap: made for the game, modelled on the KayKit head (domed leather with crossed straps, rolled brim, ear flaps); worn on the head bone (refitted over the rogue's hood like the helm).
+- [x] Iron helm: KayKit `Knight_Helmet` (from `knight.glb`), on the head and, shrunk, on the ground and stands.
+- [x] Padded tunic, Chainmail, Leather gloves, Gauntlets, Leather boots, Iron greaves: made for the game in Blender (KayKit palette, chunky shapes). Chest pieces still do not show on the rigged body (only on the ground and stands); gloves and boots never did.
+- [x] Copper ring (Band of Thirst tinted) and Bone Charm amulet (Heartstone tinted): made for the game.
+- Sketchfab had no free low-poly armour or jewellery in the KayKit style (searched: maces, armour sets); those pieces were modelled in Blender instead.
 
 ## Characters (3 models, with animations)
 - [x] Player body: idle, walk, run, roll, attack, block, climb, glide, stagger, death

@@ -26,12 +26,14 @@ const errors = [];
 // enemy body); Chromium logs those 404s. Only that exact message for those exact files is ignored.
 const MISSING_MODEL = 'models/chars/missing-test.glb';
 const MISSING_ENEMY = 'models/enemies/missing-test.glb';
+const MISSING_ITEM = 'models/items/missing-test.glb';
+const MISSING = [MISSING_MODEL, MISSING_ENEMY, MISSING_ITEM];
 const expectedError = (m) =>
-  m.text().startsWith('Failed to load resource') && [MISSING_MODEL, MISSING_ENEMY].some((f) => (m.location().url ?? '').endsWith(`/${f}`));
+  m.text().startsWith('Failed to load resource') && MISSING.some((f) => (m.location().url ?? '').endsWith(`/${f}`));
 page.on('pageerror', (e) => errors.push(String(e)));
 page.on('console', (m) => m.type() === 'error' && !expectedError(m) && errors.push(m.text()));
 // vite preview answers unknown paths with index.html (200); a real host (GitHub Pages) sends a 404.
-for (const f of [MISSING_MODEL, MISSING_ENEMY]) await page.route(`**/${f}`, (r) => r.fulfill({ status: 404, body: 'not found' }));
+for (const f of MISSING) await page.route(`**/${f}`, (r) => r.fulfill({ status: 404, body: 'not found' }));
 await page.goto(`http://localhost:${PORT}/?test`);
 await page.waitForFunction(() => window.game && window.art);
 
@@ -621,31 +623,34 @@ check('helmet and shield show on the character', s.helmet === 1 && s.shield === 
 
 // 23b. On the rig, a helm wears the pack's own knight helmet on the head bone (one mesh with its
 // outline, and its own material with the rarity glow, so the knight body's shared one stays
-// untinted); a cap wears the fitted box; the class's own hat hides under either.
-s = await run(() => {
+// untinted); a cap wears the game's leather cap model there (milestone 8, items); the class's own
+// hat hides under either. Both sit in a holder group that shows the procedural box until loaded.
+s = await run(async () => {
   const g = window.game;
   const m = g.model;
   const A = window.art;
   const inv = g.player.inv;
+  await A.modelsSettled();
   const wear = (item) => { inv.equipped.helmet = item; inv.changed(); g.step(1, null, true); return m.headGear.children; };
   const out = { rig: m.usingRig };
   let kids = wear(window.items.makeItem('helm', 'rare'));
-  const helm = kids[0];
+  const helm = kids[0]?.getObjectByName(A.HUMANOID.helm);
   const orig = A.cloneNode(A.HUMANOID.clips, A.HUMANOID.helm);
-  out.helm = kids.length === 1 && helm.name === A.HUMANOID.helm && helm.isMesh === true && !!helm.getObjectByName(`${A.HUMANOID.helm}_outline`);
+  out.helm = kids.length === 1 && kids[0].userData.model === true && helm?.isMesh === true && !!helm.getObjectByName(`${A.HUMANOID.helm}_outline`);
   out.onHead = m.headGear.parent === m.rig?.node('head');
-  out.ownGlow = helm.material !== orig?.material && !!helm.material.map && helm.material.map === orig?.material.map
+  out.ownGlow = helm?.material !== orig?.material && !!helm?.material.map && helm.material.map === orig?.material.map
     && helm.material.emissive.getHex() !== 0 && orig?.material.emissive.getHex() === 0;
   out.hatHidden = m.rig?.node('Barbarian_Hat')?.visible === false;
   kids = wear(window.items.makeItem('cap'));
   let boxes = 0;
   m.headGear.traverse((o) => { if (o.geometry?.type === 'BoxGeometry') boxes++; });
-  out.cap = kids.length === 1 && !m.headGear.getObjectByName(A.HUMANOID.helm) && boxes > 0;
+  out.cap = kids.length === 1 && kids[0].userData.model === true && !!m.headGear.getObjectByName(A.HEAD_ART.cap.node)
+    && !m.headGear.getObjectByName(A.HUMANOID.helm) && boxes === 0;
   kids = wear(null);
   out.bare = kids.length === 0 && m.rig?.node('Barbarian_Hat')?.visible === true;
   return out;
 });
-check('on the rig a helm wears the pack\'s knight helmet (own glowing material), a cap the fitted box', Object.values(s).every(Boolean), JSON.stringify(s));
+check('on the rig a helm wears the pack\'s knight helmet (own glowing material), a cap the leather cap model', Object.values(s).every(Boolean), JSON.stringify(s));
 
 // 23c. The mage's staff sits in the rig's right hand slot and stands up beside the body in Idle,
 // clear of the big head (a spare model with a mage stand-in, so the game's own class stays).
@@ -702,32 +707,47 @@ s = await run(async () => {
     return m;
   };
   const out = {};
-  // Tome (item box 0.4 × 0.5 × 0.12 m, spine at x = -0.2): body/leg/head vertices inside it, and arm
-  // vertices inside it past the spine's first 8 cm (the part in the fist); the gap from the slot's
-  // grip point to the book; its front cover (-Z) in rig space (+X = the model's left).
+  // Tome (the book shown, measured in its item frame: the pack's spellbook since milestone 8, spine at
+  // its -X): body/leg/head vertices inside it, and arm vertices inside it past the spine's first 8 cm
+  // (the part in the fist); the gap from the slot's grip point to the book; its front cover (-Z) in rig
+  // space (+X = the model's left).
   let m = await settle(stand('mage', 'oakStaff', 'tome'));
   const book = m.shield.children[0];
   const toBook = book.matrixWorld.clone().invert();
+  const v = new V();
+  const lo = new V(1e9, 1e9, 1e9);
+  const hi = new V(-1e9, -1e9, -1e9);
+  book.traverse((o) => {
+    if (!o.isMesh || o.name.endsWith('_outline')) return;
+    const pos = o.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld).applyMatrix4(toBook);
+      lo.min(v);
+      hi.max(v);
+    }
+  });
   let body = 0;
   let arm = 0;
-  const v = new V();
   m.rig.root.traverse((o) => {
     if (!o.isSkinnedMesh || !o.visible || o.name.endsWith('_outline')) return;
     const pos = o.geometry.attributes.position;
     for (let i = 0; i < pos.count; i++) {
       o.getVertexPosition(i, v);
       v.applyMatrix4(o.matrixWorld).applyMatrix4(toBook);
-      if (Math.abs(v.x) >= 0.2 || Math.abs(v.y) >= 0.25 || Math.abs(v.z) >= 0.06) continue;
-      if (/Arm/.test(o.name)) arm += v.x > -0.12 ? 1 : 0;
+      if (v.x <= lo.x || v.x >= hi.x || v.y <= lo.y || v.y >= hi.y || v.z <= lo.z || v.z >= hi.z) continue;
+      if (/Arm/.test(o.name)) arm += v.x > lo.x + 0.08 ? 1 : 0;
       else body++;
     }
   });
   const fist = m.rig.node('handslot.l').getWorldPosition(new V());
-  const near = book.worldToLocal(fist.clone()).clamp(new V(-0.2, -0.25, -0.06), new V(0.2, 0.25, 0.06));
+  const near = book.worldToLocal(fist.clone()).clamp(lo, hi);
   const gap = book.localToWorld(near).distanceTo(fist);
   const rigQ = m.rig.root.getWorldQuaternion(m.root.quaternion.clone()).invert();
   const cover = new V(0, 0, -1).transformDirection(book.matrixWorld).applyQuaternion(rigQ);
-  out.tome = { rig: m.usingRig, clip: m.rig?.clip, inHand: m.shield.parent === m.rig?.node('handslot.l'), gap: +gap.toFixed(2), coverOut: +cover.x.toFixed(2), body, arm };
+  out.tome = {
+    rig: m.usingRig, clip: m.rig?.clip, inHand: m.shield.parent === m.rig?.node('handslot.l'), model: book.userData.model,
+    size: [hi.x - lo.x, hi.y - lo.y, hi.z - lo.z].map((x) => +x.toFixed(2)), gap: +gap.toFixed(2), coverOut: +cover.x.toFixed(2), body, arm,
+  };
   const tomeRest = { q: m.shield.quaternion.clone(), p: m.shield.position.clone() };
   m.rig?.dispose();
   // Parrying dagger: grip at the slot, blade (-Z) along the slot's +Y; no second dagger beside it.
@@ -752,11 +772,118 @@ s = await run(async () => {
   return out;
 });
 check('on the rig the mage\'s tome is held in the left fist at its spine, cover out, clear of the body and arm in Idle',
-  s.tome.rig && s.tome.clip === 'Idle' && s.tome.inHand && s.tome.gap < 0.1 && s.tome.coverOut > 0.8 && s.tome.body === 0 && s.tome.arm === 0, JSON.stringify(s.tome));
+  s.tome.rig && s.tome.model && s.tome.clip === 'Idle' && s.tome.inHand && s.tome.gap < 0.1 && s.tome.coverOut > 0.8 && s.tome.body === 0 && s.tome.arm === 0, JSON.stringify(s.tome));
 check('on the rig the parrying dagger is held like the second dagger (grip at the left slot, blade along its +Y)',
   s.dagger.inHand && s.dagger.along > 0.99 && s.dagger.grip < 0.01 && s.dagger.second === 0, JSON.stringify(s.dagger));
 check('a shield swapped for a tome mid-guard leaves the tome at its own rest on the left slot',
   s.swap.guardUp && s.swap.turn < 1e-3 && s.swap.moved < 1e-4, JSON.stringify(s.swap));
+
+// 23e. Item models (milestone 8): every base and legendary shows its glTF model once the files load,
+// copies share geometry and materials, a missing file keeps the procedural mesh, the rarity glow
+// is on the model, the procedural tome's pages sit inside its cover.
+s = await run(async (miss) => {
+  const A = window.art;
+  const I = window.items;
+  await A.modelsSettled();
+  const out = { wrong: [], looks: [] };
+  const items = [...I.BASES.map((b) => I.makeItem(b.id)), ...I.UNIQUES.map((u) => I.makeItem(u.base, 'legendary', 1, [], u.id))];
+  const looks = new Set();
+  for (const it of items) {
+    const art = A.itemArt(it);
+    const g = A.buildItemMesh(it);
+    const shown = g.children[0];
+    if (!(g.userData.model === true && shown?.name === `item:${art.node}` && shown.getObjectByName(art.node))) out.wrong.push(it.base + (it.unique ? `/${it.unique}` : ''));
+    else looks.add(I.BASE_BY_ID[it.base].look);
+  }
+  out.looks = looks.size;
+  // Two copies (loot on the ground, a rack) share the file's geometry; same rarity, same material.
+  const mesh = (g) => { let m = null; g.traverse((o) => { if (!m && o.isMesh && !o.name.endsWith('_outline')) m = o; }); return m; };
+  const r1 = mesh(A.buildItemMesh(I.makeItem('ironSword', 'rare')));
+  const r2 = mesh(A.buildItemMesh(I.makeItem('ironSword', 'rare')));
+  const c1 = mesh(A.buildItemMesh(I.makeItem('ironSword')));
+  const file = mesh(A.cloneNode(A.ITEM_FILE, 'Sword_Iron'));
+  out.shared = r1.geometry === r2.geometry && r1.geometry === c1.geometry && r1.material === r2.material && c1.material === file.material;
+  // Rarity glow: rare glows blue, common does not; a unique with its own glow uses it.
+  out.glow = { rare: r1.material.emissive.getHexString(), rareI: +r1.material.emissiveIntensity.toFixed(3), common: c1.material.emissive.getHex() };
+  const ember = mesh(A.buildItemMesh(I.makeItem('ironMace', 'legendary', 1, [], 'emberMaul')));
+  out.glow.unique = ember.material.emissive.getHexString();
+  out.glow.map = r1.material.map === file.material.map;
+  // A missing file: the procedural mesh stays, nothing throws.
+  let threw = '';
+  let missing = null;
+  try {
+    const it = I.makeItem('ironSword', 'epic');
+    missing = A.buildItemMesh(it, { ...A.itemArt(it), file: miss });
+    await A.modelsSettled();
+  } catch (e) {
+    threw = String(e);
+  }
+  out.missing = { model: missing?.userData.model, shown: missing?.children[0]?.name, state: A.modelState(miss), threw };
+  // Procedural tome (shown while loading): the pages block lies inside the covers on every axis and
+  // is no thicker than the gap between them, so no cream shows through either cover.
+  const tome = A.buildProceduralItem(I.makeItem('tome'));
+  tome.updateMatrixWorld(true);
+  const box = (o) => { o.geometry.computeBoundingBox(); return o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld); };
+  const covers = tome.children.filter((o) => o.name === 'tome_cover').map(box);
+  const pages = box(tome.children.find((o) => o.name === 'tome_pages'));
+  const all = covers.reduce((a, b) => a.union(b), covers[0].clone());
+  const plates = covers.filter((b) => b.max.x - b.min.x > 0.2).sort((a, b) => a.min.z - b.min.z);
+  out.tome = {
+    inside: all.containsBox(pages),
+    between: pages.min.z >= plates[0].max.z - 1e-6 && pages.max.z <= plates[1].min.z + 1e-6,
+    pages: +(pages.max.z - pages.min.z).toFixed(3), gap: +(plates[1].min.z - plates[0].max.z).toFixed(3),
+  };
+  return out;
+}, MISSING_ITEM);
+check('items: every base and legendary shows its own model (all 19 looks), copies share geometry and materials',
+  s.wrong.length === 0 && s.looks === 19 && s.shared, JSON.stringify({ wrong: s.wrong, looks: s.looks, shared: s.shared }));
+check('items: a missing model file keeps the procedural mesh without throwing',
+  s.missing.model === false && s.missing.shown === 'item:procedural' && s.missing.state === 'failed' && !s.missing.threw, JSON.stringify(s.missing));
+check('items: the rarity glow is on the model (rare blue, common none, a legendary unique its own colour)',
+  s.glow.rare === '4f9dff' && s.glow.rareI > 0 && s.glow.common === 0 && s.glow.unique !== '000000' && s.glow.unique !== 'ff9a2e' && s.glow.map, JSON.stringify(s.glow));
+check('items: the procedural tome\'s pages sit inside its cover', s.tome.inside && s.tome.between && s.tome.pages <= s.tome.gap, JSON.stringify(s.tome));
+
+// 23f. Held items on each class's rig: weapons in the right hand slot, off-hands (and the assassin's second
+// dagger) in the left, each showing its model with its grip at the slot; a cap shows the leather cap model
+// on the head bone (refitted over the rogue's hood like the helm).
+s = await run(async () => {
+  const A = window.art;
+  const g = window.game;
+  const I = window.items;
+  const V = g.player.pos.constructor;
+  const stand = (cls, weapon, offhand) => Object.create(g.player, {
+    cls: { value: cls }, prog: { value: { version: 0 } }, state: { value: 'ground' }, vel: { value: new V() }, stealthTime: { value: 0 },
+    inv: { value: { version: 1, equipped: { weapon: I.makeItem(weapon), offhand: offhand ? I.makeItem(offhand) : null, helmet: I.makeItem('cap'), chest: null } } },
+    blocking: { value: false, writable: true }, blockTime: { value: 0, writable: true },
+  });
+  const out = {};
+  for (const [cls, weapon, offhand] of [['warrior', 'ironSword', 'woodShield'], ['tank', 'rustyMace', 'ironShield'], ['mage', 'oakStaff', 'tome'], ['assassin', 'steelDaggers', 'parryDagger'], ['assassin', 'rustyDaggers', null]]) {
+    const m = new A.PlayerModel();
+    const p = stand(cls, weapon, offhand);
+    m.update(p, 1 / 60);
+    await A.modelsSettled();
+    for (let i = 0; i < 5; i++) m.update(p, 1 / 60);
+    m.root.updateMatrixWorld(true);
+    const R = m.rig?.node('handslot.r');
+    const L = m.rig?.node('handslot.l');
+    const held = (holder, slot) => holder.parent === slot && holder.children.length === 1 && holder.children[0].userData.model === true;
+    const at = (holder, slot) => +holder.children[0].getWorldPosition(new V()).distanceTo(slot.getWorldPosition(new V())).toFixed(3);
+    const key = `${cls}:${weapon}`;
+    const cap = m.headGear.children[0];
+    const capNode = cap?.getObjectByName(A.HEAD_ART.cap.node);
+    out[key] = {
+      rig: m.usingRig, weapon: held(m.sword, R), weaponAt: at(m.sword, R),
+      off: offhand ? held(m.shield, L) : held(m.offDagger, L), offAt: offhand ? null : at(m.offDagger, L),
+      cap: m.headGear.parent === m.rig?.node('head') && cap?.userData.model === true && !!capNode, capScale: +(capNode?.scale.x ?? 0).toFixed(2),
+    };
+    m.rig?.dispose();
+  }
+  return out;
+});
+check('items: each class holds its weapon in the right hand slot and its off-hand (or second dagger) in the left, as models',
+  Object.values(s).every((v) => v.rig && v.weapon && v.weaponAt < 0.01 && v.off && (v.offAt === null || v.offAt < 0.01)), JSON.stringify(s));
+check('items: a cap shows the leather cap model on the head bone of every class (larger over the rogue\'s hood)',
+  Object.values(s).every((v) => v.cap) && s['assassin:steelDaggers'].capScale > s['warrior:ironSword'].capScale, JSON.stringify(Object.fromEntries(Object.entries(s).map(([k, v]) => [k, [v.cap, v.capScale]]))));
 
 // 24. Legendary effects.
 s = await run(() => {

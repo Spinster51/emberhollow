@@ -1,20 +1,21 @@
 import * as THREE from 'three';
 import { addOutline, toonMaterial } from '../core/toon';
 import type { Player } from './Player';
-import { buildItemMesh, gearMaterial } from '../items/ItemMesh';
+import { applyItemLook, buildItemMesh, buildProceduralItem, lazyModel, preloadItemModels } from '../items/ItemMesh';
 import { lookOf, type Item, type Look } from '../items/items';
 import { CLASSES, type ClassId } from '../classes/classes';
 import { TUNING } from '../config';
 import { cloneModel, cloneNode, loadModel, modelClips, modelState } from '../core/models';
 import { Rig } from '../core/rig';
-import { ATTACK_CLIPS, HUMANOID, SKILL_CLIPS, type SwingClip } from '../art/assets';
+import { ATTACK_CLIPS, HEAD_ART, HUMANOID, SKILL_CLIPS, type SwingClip } from '../art/assets';
 
 const AXIS_X = new THREE.Vector3(1, 0, 0);
 /** Height (m) of the point the rigged body flips around in a roll: the middle of the tucked body. */
 const ROLL_PIVOT = 0.75;
 /**
- * Box helmet (caps) fit on the rig's head bone (rig units): centre height, width scale, dome
- * height. Helms wear the pack's own knight helmet instead (`rigHelmet`).
+ * Box helmet fit on the rig's head bone (rig units): centre height, width scale, dome height. Only
+ * while a head piece's model loads (or if its file fails): helms wear the pack's knight helmet and
+ * caps the game's leather cap (`HEAD_ART`).
  */
 const RIG_HELMET = { y: 0.84, width: 2.0, height: 0.46 };
 /**
@@ -244,6 +245,7 @@ export class PlayerModel {
 
     // The shared clips load straight away; each class body loads when first needed.
     void loadModel(this.clips).catch(() => {});
+    preloadItemModels();
   }
 
   /** True once the rigged character is shown (false: placeholder). */
@@ -294,9 +296,10 @@ export class PlayerModel {
       else holder.scale.set(...scale);
       b.add(holder);
     };
-    // Weapons point along -Z from the grip; the hand slots hold blades along +Y.
+    // Weapons point along -Z from the grip; the hand slots hold blades along +Y. The pack holds its
+    // left-hand knife turned half round about the blade from the right-hand one (the slots mirror).
     put(this.sword, HUMANOID.handR, [0, 0, 0], [Math.PI / 2, 0, 0], inv);
-    put(this.offDagger, HUMANOID.handL, [0, 0, 0], [Math.PI / 2, 0, 0], inv);
+    put(this.offDagger, HUMANOID.handL, [0, 0, 0], [Math.PI / 2, 0, Math.PI], inv);
     // The pack's shields sit 0.16 out from the left hand slot, face along +Z, long side along +Y;
     // ours face -Z, so they turn half round.
     put(this.shield, HUMANOID.handL, [0, 0.02, 0.16], [0, Math.PI, 0], inv);
@@ -384,40 +387,42 @@ export class PlayerModel {
   }
 
   /**
-   * What a helmet shows on the rig's head bone: a helm wears the pack's own knight helmet at its
-   * place on the head (rig units; refitted only over the rogue's hood, `HUMANOID.helmFit`) with
-   * its own material carrying the rarity glow,
-   * so the tint never reaches the knight body's shared material; a cap (or a helm, should the
-   * file lack it) is the item's box, sized to the pack's big round head (±0.54 wide, top ~1.0
-   * above the bone): a little narrower than the head, down to the brow.
+   * What a helmet shows on the rig's head bone: its head model (`HEAD_ART`: the pack's knight helmet
+   * for helms, the game's leather cap for caps), modelled at its place on the head bone (rig units;
+   * refitted only over the rogue's hood, `HUMANOID.helmFit`), with the item's shared glowing material
+   * so the tint never reaches the knight body's own. Until its file is ready (or if it fails) it is the
+   * item's procedural box, sized to the pack's big round head (±0.54 wide, top ~1.0 above the bone):
+   * a little narrower than the head, down to the brow.
    */
   private rigHelmet(item: Item): THREE.Object3D {
     const look = lookOf(item);
-    const helm = look === 'helm' ? cloneNode(this.clips, HUMANOID.helm) : null;
-    if (helm) {
-      helm.traverse((o) => {
-        const mesh = o as THREE.Mesh;
-        if (!mesh.isMesh || mesh.name.endsWith('_outline')) return;
-        const src = mesh.material as THREE.MeshToonMaterial;
-        const mat = gearMaterial(0xffffff, item);
-        mat.color.copy(src.color);
-        mat.map = src.map;
-        mesh.material = mat;
-      });
-      const bodyFit = this.rigClass && HUMANOID.helmFit[this.rigClass];
-      if (bodyFit) {
-        helm.scale.multiplyScalar(bodyFit.scale);
-        helm.position.z -= bodyFit.back;
-      }
-      return helm;
-    }
-    // Item fronts are -Z; the rig faces +Z. Every dome is stretched to one height (cap 0.2, helm 0.3 tall).
-    const fit = new THREE.Group();
-    fit.position.set(0, RIG_HELMET.y, 0);
-    fit.rotation.set(0, Math.PI, 0);
-    fit.scale.set(RIG_HELMET.width, RIG_HELMET.height / (look === 'cap' ? 0.2 : 0.3), RIG_HELMET.width);
-    fit.add(buildItemMesh(item));
-    return fit;
+    const box = () => {
+      // Item fronts are -Z; the rig faces +Z. Every dome is stretched to one height (cap 0.2, helm 0.3 tall).
+      const fit = new THREE.Group();
+      fit.position.set(0, RIG_HELMET.y, 0);
+      fit.rotation.set(0, Math.PI, 0);
+      fit.scale.set(RIG_HELMET.width, RIG_HELMET.height / (look === 'cap' ? 0.2 : 0.3), RIG_HELMET.width);
+      fit.add(buildProceduralItem(item));
+      return fit;
+    };
+    const head = HEAD_ART[look];
+    if (!head) return box();
+    const cls = this.rigClass;
+    return lazyModel(
+      head.file,
+      () => {
+        const node = cloneNode(head.file, head.node);
+        if (!node) return null;
+        applyItemLook(node, item);
+        const bodyFit = cls && HUMANOID.helmFit[cls];
+        if (bodyFit) {
+          node.scale.multiplyScalar(bodyFit.scale);
+          node.position.z -= bodyFit.back;
+        }
+        return node;
+      },
+      box,
+    );
   }
 
   update(p: Player, dt: number): void {

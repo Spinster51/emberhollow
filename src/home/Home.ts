@@ -241,7 +241,10 @@ export class Home {
     this.spots.push(spot);
   }
 
-  /** Put the displayed item's model on its mount / stand / table. */
+  /**
+   * Put the displayed item's model on its mount / stand / table. Item fronts face -Z: shields and tomes
+   * turn to face out from the wall, and stands turn their piece to face the middle of its room.
+   */
   private showSpot(s: Spot): void {
     s.holder.clear();
     if (!s.item) return;
@@ -251,10 +254,11 @@ export class Home {
       if (look !== 'woodShield' && look !== 'ironShield' && look !== 'tome') {
         m.rotation.set(Math.PI / 2, 0, 0.6);
         m.position.y = -0.55;
-      }
+      } else m.rotation.y = Math.PI;
     } else if (s.kind === 'stand') {
       const height: Partial<Record<Look, number>> = { cap: 1.75, helm: 1.75, tunic: 1.3, mail: 1.3, gloves: 1.0, gauntlets: 1.0, boots: 0.18, greaves: 0.18 };
       m.position.y = height[look] ?? 1.3;
+      m.rotation.y = Math.atan2(-(this.world.homeSite.x - s.pos.x), 0);
     } else {
       m.rotation.y = 0.5;
     }

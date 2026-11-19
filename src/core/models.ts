@@ -20,13 +20,18 @@ export function assetUrl(path: string): string {
   return import.meta.env.BASE_URL + path;
 }
 
-/** Start loading a model (once). Resolves with the parsed file; rejects if it fails. */
-export function loadModel(path: string): Promise<GLTF> {
+export interface ModelOptions {
+  /** Outline thickness for a mesh in its own units (default 0.04; 0 = none). */
+  outline?: (mesh: THREE.Mesh) => number;
+}
+
+/** Start loading a model (once; the first call's options apply). Resolves with the parsed file; rejects if it fails. */
+export function loadModel(path: string, opts: ModelOptions = {}): Promise<GLTF> {
   let p = pending.get(path);
   if (!p) {
     p = loader.loadAsync(assetUrl(path)).then(
       (gltf) => {
-        prepare(gltf);
+        prepare(gltf, opts);
         ready.set(path, gltf);
         return gltf;
       },
@@ -102,7 +107,7 @@ export async function modelsSettled(): Promise<void> {
  * pack's colour atlas, shadows, and a back-face outline on every mesh. Clones share
  * these materials and outline meshes.
  */
-function prepare(gltf: GLTF): void {
+function prepare(gltf: GLTF, opts: ModelOptions): void {
   const mats = new Map<THREE.Material, THREE.MeshToonMaterial>();
   const meshes: THREE.Mesh[] = [];
   gltf.scene.traverse((o) => {
@@ -129,6 +134,7 @@ function prepare(gltf: GLTF): void {
     mesh.material = toon;
     mesh.castShadow = true;
     mesh.receiveShadow = false;
-    addSkinnedOutline(mesh, 0.04);
+    const outline = opts.outline?.(mesh) ?? 0.04;
+    if (outline > 0) addSkinnedOutline(mesh, outline);
   }
 }

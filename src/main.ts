@@ -19,13 +19,14 @@ if (new URLSearchParams(location.search).has('test')) {
   void Promise.all([
     import('./items/items'), import('./ui/InventoryUI'), import('./save/Save'), import('./items/crafting'), import('./core/sound'),
     import('./core/models'), import('./core/rig'), import('./player/PlayerModel'), import('./art/assets'), import('./combat/EnemyModel'),
-  ]).then(([items, ui, save, crafting, snd, models, rig, playerModel, assets, enemyModel]) => {
+    import('./items/ItemMesh'),
+  ]).then(([items, ui, save, crafting, snd, models, rig, playerModel, assets, enemyModel, itemMesh]) => {
     (window as unknown as { items: unknown }).items = { ...items, tooltipHtml: ui.tooltipHtml, validateAccount: save.validateAccount };
     (window as unknown as { crafting: unknown }).crafting = crafting;
     (window as unknown as { sound: unknown }).sound = snd;
-    // Art pass: model loading (`modelsSettled`), rigs and spare Player/EnemyModels for fallback checks.
+    // Art pass: model loading (`modelsSettled`), rigs, spare Player/EnemyModels for fallback checks, item models.
     (window as unknown as { art: unknown }).art = {
-      ...models, Rig: rig.Rig, PlayerModel: playerModel.PlayerModel, EnemyModel: enemyModel.EnemyModel, ...assets,
+      ...models, Rig: rig.Rig, PlayerModel: playerModel.PlayerModel, EnemyModel: enemyModel.EnemyModel, ...assets, ...itemMesh,
     };
   });
 }

@@ -374,3 +374,115 @@ export const ENEMY_ART: Record<EnemyKind | 'add', EnemyArt> = {
 
 /** Rigs further than this (m) from the player only animate while awake (not idle). */
 export const ENEMY_ANIM_RANGE = 60;
+
+// ---------------------------------------------------------------- items (milestone 8)
+
+type V3 = [number, number, number];
+
+/**
+ * An item's model and how it sits in item space: metres; weapons point along -Z from the grip at
+ * the origin, everything else is centred with its front facing -Z (as the procedural models in
+ * ItemMesh.ts). `pos`/`rot` (Euler XYZ)/`scale` place the file's node in that space.
+ */
+export interface ItemArt {
+  file: string;
+  node: string;
+  pos: V3;
+  rot: V3;
+  scale: number;
+  /** Multiply every colour by this (rust, ember). */
+  tint?: number;
+  /** A glow of its own (uniques), in place of the rarity colour. */
+  glow?: number;
+}
+
+/** Shared items file: KayKit props (some recoloured) and models made for the game in Blender; see CREDITS.md. */
+export const ITEM_FILE = 'models/items/items.glb';
+const SKELETON_BLADE = 'models/enemies/skeleton_blade.glb';
+const SKELETON_STAFF = 'models/enemies/skeleton_staff.glb';
+/** KayKit units → metres (the rig's scale). */
+const KK = HUMANOID.scale;
+/**
+ * A pack prop in a right hand slot sits `slotY` out along the slot's +Y (the fist's grip axis), turned
+ * half round about it. The game's hand holders turn item -Z onto that axis and undo the rig's scale,
+ * so in item space the prop is turned (π/2, 0, π), slid `slotY` (pack units) along -Z, and sized KK.
+ */
+const held = (file: string, node: string, slotY = 0.033, size = 1, more: Partial<ItemArt> = {}): ItemArt => ({
+  file, node, pos: [0, 0, -slotY * KK * size], rot: [Math.PI / 2, 0, Math.PI], scale: KK * size, ...more,
+});
+/**
+ * Staffs stand up the hand slot's -X (PlayerModel's STAFF_GRIP), so only their length matters: each slides
+ * along itself so its foot (at `footY` along the file's +Y, pack units) sits 0.4 m behind the grip, like the
+ * old staff's (its foot then clears the ground in Idle).
+ */
+const staff = (file: string, node: string, footY: number, more: Partial<ItemArt> = {}): ItemArt => ({
+  file, node, pos: [0, 0, 0.4 - -footY * KK], rot: [Math.PI / 2, 0, Math.PI], scale: KK, ...more,
+});
+/** Pack shields face +Z on the left slot; item fronts face -Z, so they turn half round (PlayerModel turns them back). */
+const shield = (node: string): ItemArt => ({ file: ITEM_FILE, node, pos: [0, 0, 0], rot: [0, Math.PI, 0], scale: KK });
+/** Pieces modelled in metres, front -Z: centred by `pos`. */
+const worn = (node: string, pos: V3, more: Partial<ItemArt> = {}): ItemArt => ({ file: ITEM_FILE, node, pos, rot: [0, 0, 0], scale: 1, ...more });
+
+const RUST = 0xd9a27a;
+const EMBER = 0xffb08a;
+
+/**
+ * Models per look; `bases` and `uniques` override it (the starter rusty pieces, legendaries).
+ * Off-hand tome: the pack's spellbook (spine along its -Z, height +Y, covers ±X) turned so the spine
+ * runs along item -X and the covers face ±Z, sized like the pack's own (the off-hand rest shrinks it 0.85).
+ */
+export const ITEM_ART: {
+  looks: Record<Look, ItemArt>;
+  bases: Record<string, ItemArt>;
+  uniques: Record<string, ItemArt>;
+} = {
+  looks: {
+    sword: held(ITEM_FILE, 'Sword_Iron'),
+    greatsword: held(ITEM_FILE, 'Greatsword'),
+    mace: held(ITEM_FILE, 'Mace_Flanged'),
+    staff: staff(ITEM_FILE, 'Staff_Runed', -0.9),
+    daggers: held(ITEM_FILE, 'Dagger', 0),
+    // A short sword with a broad guard (the pack's 1H sword at 55%) reads as a main-gauche.
+    parryDagger: held(ITEM_FILE, 'Sword_Iron', 0.033, 0.55),
+    tome: { file: ITEM_FILE, node: 'Tome', pos: [0, 0, 0], rot: [0, Math.PI / 2, 0], scale: KK / 0.85 },
+    woodShield: shield('Shield_Wood'),
+    ironShield: shield('Shield_Iron'),
+    // Head pieces are modelled on the rig's head bone (`HEAD_ART`); on the ground and on stands they shrink to ~0.5 m.
+    cap: { file: ITEM_FILE, node: 'Cap', pos: [0, -0.28, 0], rot: [0, Math.PI, 0], scale: 0.4 },
+    helm: { file: HUMANOID.clips, node: HUMANOID.helm, pos: [0, -0.23, 0.036], rot: [0, Math.PI, 0], scale: 0.42 },
+    tunic: worn('Tunic', [0, -0.02, 0]),
+    mail: worn('Mail', [0, -0.02, 0]),
+    gloves: worn('Gloves', [0, -0.016, 0]),
+    gauntlets: worn('Gauntlets', [0, -0.015, 0]),
+    boots: worn('Boots', [0, -0.173, 0.043]),
+    greaves: worn('Greaves', [0, -0.188, 0.044]),
+    ring: worn('Ring', [0, -0.053, 0]),
+    amulet: worn('Amulet', [0, 0.05, 0]),
+  },
+  bases: {
+    // KayKit Skeletons' jagged blade (the skeletons' own file) as the starter's rusty sword.
+    rustySword: held(SKELETON_BLADE, 'Skeleton_Blade'),
+    rustyMace: held(ITEM_FILE, 'Mace_Rusty'),
+    oakStaff: staff(ITEM_FILE, 'Staff_Oak', -0.64),
+    rustyDaggers: held(ITEM_FILE, 'Dagger', 0, 1, { tint: RUST }),
+  },
+  uniques: {
+    // "Autumn Sword" by SimberGI (CC BY 4.0), decimated, its glow baked into the colour map.
+    emberfang: held(ITEM_FILE, 'Sword_Autumn'),
+    emberMaul: held(ITEM_FILE, 'Mace_Flanged', 0.033, 1, { tint: EMBER, glow: 0xff4a10 }),
+    cinderstaff: staff(SKELETON_STAFF, 'Skeleton_Staff', -0.846, { tint: EMBER, glow: 0xff5a1a }),
+    bloodfangs: held(ITEM_FILE, 'Dagger', 0, 1, { tint: 0xff9090, glow: 0xff1f3a }),
+    thirstBand: worn('Ring', [0, -0.053, 0], { tint: 0xd05a6a, glow: 0xff2040 }),
+    driftstep: worn('Boots', [0, -0.173, 0.043], { tint: 0xc4e6ff, glow: 0x5fd0ff }),
+    heartstone: worn('Amulet', [0, 0.05, 0], { tint: 0xff9a90, glow: 0xff3030 }),
+  },
+};
+
+/**
+ * Head pieces as worn on the rig: nodes modelled on the head bone (rig units), placed there as they are;
+ * `HUMANOID.helmFit` refits them over the rogue's hood.
+ */
+export const HEAD_ART: Partial<Record<Look, { file: string; node: string }>> = {
+  helm: { file: HUMANOID.clips, node: HUMANOID.helm },
+  cap: { file: ITEM_FILE, node: 'Cap' },
+};
