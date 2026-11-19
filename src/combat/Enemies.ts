@@ -6,6 +6,7 @@ import { Enemy, type EnemyHooks } from './Enemy';
 import { EnemyModel } from './EnemyModel';
 import { inArc, type CombatFx } from './combat';
 import { ENEMY_STATS } from '../config';
+import { ENEMY_ANIM_RANGE } from '../art/assets';
 
 const C = TUNING.combat;
 const E = TUNING.enemies;
@@ -78,7 +79,7 @@ export class Enemies {
     this.list.splice(i, 1);
     const m = this.models.findIndex((x) => x.enemy === e);
     if (m >= 0) {
-      this.group.remove(this.models[m].root);
+      this.models[m].dispose();
       this.models.splice(m, 1);
     }
     this.deadFor.delete(e);
@@ -192,14 +193,20 @@ export class Enemies {
     this.deadFor.clear();
   }
 
+  /**
+   * Models past 160 m are hidden. Rigs animate within `ENEMY_ANIM_RANGE` of the player, or further
+   * while awake (chasing, attacking, going home); asleep beyond it they hold their pose.
+   */
   updateModels(dt: number, view: THREE.Vector3): void {
+    const near = ENEMY_ANIM_RANGE * ENEMY_ANIM_RANGE;
     for (const m of this.models) {
-      const far = m.enemy.pos.distanceToSquared(view) > 160 * 160;
-      if (far) {
+      const d2 = m.enemy.pos.distanceToSquared(view);
+      if (d2 > 160 * 160) {
         m.root.visible = false;
         continue;
       }
-      m.update(dt);
+      const awake = m.enemy.state !== 'idle' && m.enemy.state !== 'dead';
+      m.update(dt, d2 < near || awake);
     }
   }
 

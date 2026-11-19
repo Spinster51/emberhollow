@@ -22,14 +22,16 @@ await new Promise((resolve, reject) => {
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader'] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const errors = [];
-// The fallback check below asks for a model file that does not exist on purpose; Chromium logs
-// that one 404. Only that exact message for that exact file is ignored.
+// The fallback checks below ask for model files that do not exist on purpose (a player body and an
+// enemy body); Chromium logs those 404s. Only that exact message for those exact files is ignored.
 const MISSING_MODEL = 'models/chars/missing-test.glb';
-const expectedError = (m) => m.text().startsWith('Failed to load resource') && (m.location().url ?? '').endsWith(`/${MISSING_MODEL}`);
+const MISSING_ENEMY = 'models/enemies/missing-test.glb';
+const expectedError = (m) =>
+  m.text().startsWith('Failed to load resource') && [MISSING_MODEL, MISSING_ENEMY].some((f) => (m.location().url ?? '').endsWith(`/${f}`));
 page.on('pageerror', (e) => errors.push(String(e)));
 page.on('console', (m) => m.type() === 'error' && !expectedError(m) && errors.push(m.text()));
 // vite preview answers unknown paths with index.html (200); a real host (GitHub Pages) sends a 404.
-await page.route(`**/${MISSING_MODEL}`, (r) => r.fulfill({ status: 404, body: 'not found' }));
+for (const f of [MISSING_MODEL, MISSING_ENEMY]) await page.route(`**/${f}`, (r) => r.fulfill({ status: 404, body: 'not found' }));
 await page.goto(`http://localhost:${PORT}/?test`);
 await page.waitForFunction(() => window.game && window.art);
 
@@ -112,6 +114,39 @@ art = await run(async (miss) => {
   return { rig: m.usingRig, state: A.modelState(miss), blocky: m.blocky.visible, sword: m.sword.children.length, threw };
 }, MISSING_MODEL);
 check('a missing model file keeps the placeholder without throwing', art.rig === false && art.state === 'failed' && art.blocky && art.sword === 1 && !art.threw, JSON.stringify(art));
+
+// Enemies (milestone 8): the test map's bandits show their rig; one whose body file 404s keeps the
+// blocky model, and its procedural poses still move (wind-up raises the sword arm).
+art = await run(async (miss) => {
+  const A = window.art;
+  const g = window.game;
+  const e = g.enemies.list.find((x) => x.kind === 'bandit');
+  const real = g.enemies.models.find((x) => x.enemy === e);
+  const m = new A.EnemyModel(e, { ...A.ENEMY_ART.bandit, body: miss });
+  // The goblin's art (recoloured texture, ears) and the new boar body, both missing, fall back the same way.
+  const boarE = g.enemies.list.find((x) => x.kind === 'boar');
+  const others = [new A.EnemyModel(e, { ...A.ENEMY_ART.goblin, body: miss }), new A.EnemyModel(boarE, { ...A.ENEMY_ART.boar, body: miss })];
+  let threw = '';
+  const out = {};
+  try {
+    for (const x of [m, ...others]) x.update(1 / 60);
+    await A.modelsSettled();
+    for (let i = 0; i < 3; i++) for (const x of [m, ...others]) x.update(1 / 60);
+    const before = m.parts.armR.rotation.x;
+    e.state = 'windup';
+    e.stateTime = 0.3;
+    for (let i = 0; i < 10; i++) m.update(1 / 60);
+    out.armMoved = +(m.parts.armR.rotation.x - before).toFixed(2);
+    out.others = others.map((x) => (x.usingRig ? 'rig' : x.body.visible ? 'blocky' : 'hidden')).join();
+    out.boarLegs = !!others[1].parts.leg0;
+    e.reset();
+  } catch (err) {
+    threw = String(err);
+  }
+  return { ...out, rig: m.usingRig, state: A.modelState(miss), blocky: m.body.visible, realRig: real.usingRig, threw };
+}, MISSING_ENEMY);
+check('enemies: the bandit shows its rig; a missing enemy model keeps the blocky one, still posed, without throwing', art.realRig && !art.rig && art.state === 'failed' && art.blocky && art.armMoved < -0.5 && !art.threw, JSON.stringify(art));
+check('enemies: a missing goblin or boar model falls back to the blocky placeholder too', art.others === 'blocky,blocky' && art.boarLegs && !art.threw, JSON.stringify(art));
 
 // 1. Spawn and walk.
 let s = await run(() => (window.game.step(10), window.snap()));
@@ -643,6 +678,85 @@ s = await run(async () => {
 });
 check('the mage\'s staff is in the rig\'s right hand, upright beside the body and clear of the head in Idle',
   s.rig && s.cls === 'mage' && s.clip === 'Idle' && s.inHand && s.up > 0.75 && s.clear > 1.5, JSON.stringify(s));
+
+// 23d. Off-hand items rest their own way on the rig's left hand slot (spare models with stand-ins,
+// as in 23c): the tome in the fist at its spine, front cover out, clear of the body and arm in Idle;
+// the parrying dagger at the grip with its blade along the slot's +Y (as the second dagger); and a
+// shield swapped for a tome while the guard is up leaves the tome at its own rest.
+s = await run(async () => {
+  const A = window.art;
+  const g = window.game;
+  const I = window.items;
+  const V = g.player.pos.constructor;
+  const stand = (cls, weapon, offhand) => Object.create(g.player, {
+    cls: { value: cls }, prog: { value: { version: 0 } }, state: { value: 'ground' }, vel: { value: new V() }, stealthTime: { value: 0 },
+    inv: { value: { version: 1, equipped: { weapon: I.makeItem(weapon), offhand: I.makeItem(offhand), helmet: null, chest: null } } },
+    blocking: { value: false, writable: true }, blockTime: { value: 0, writable: true },
+  });
+  const settle = async (p) => {
+    const m = new A.PlayerModel();
+    m.update(p, 1 / 60);
+    await A.modelsSettled();
+    for (let i = 0; i < 30; i++) m.update(p, 1 / 60);
+    m.root.updateMatrixWorld(true);
+    return m;
+  };
+  const out = {};
+  // Tome (item box 0.4 × 0.5 × 0.12 m, spine at x = -0.2): body/leg/head vertices inside it, and arm
+  // vertices inside it past the spine's first 8 cm (the part in the fist); the gap from the slot's
+  // grip point to the book; its front cover (-Z) in rig space (+X = the model's left).
+  let m = await settle(stand('mage', 'oakStaff', 'tome'));
+  const book = m.shield.children[0];
+  const toBook = book.matrixWorld.clone().invert();
+  let body = 0;
+  let arm = 0;
+  const v = new V();
+  m.rig.root.traverse((o) => {
+    if (!o.isSkinnedMesh || !o.visible || o.name.endsWith('_outline')) return;
+    const pos = o.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      o.getVertexPosition(i, v);
+      v.applyMatrix4(o.matrixWorld).applyMatrix4(toBook);
+      if (Math.abs(v.x) >= 0.2 || Math.abs(v.y) >= 0.25 || Math.abs(v.z) >= 0.06) continue;
+      if (/Arm/.test(o.name)) arm += v.x > -0.12 ? 1 : 0;
+      else body++;
+    }
+  });
+  const fist = m.rig.node('handslot.l').getWorldPosition(new V());
+  const near = book.worldToLocal(fist.clone()).clamp(new V(-0.2, -0.25, -0.06), new V(0.2, 0.25, 0.06));
+  const gap = book.localToWorld(near).distanceTo(fist);
+  const rigQ = m.rig.root.getWorldQuaternion(m.root.quaternion.clone()).invert();
+  const cover = new V(0, 0, -1).transformDirection(book.matrixWorld).applyQuaternion(rigQ);
+  out.tome = { rig: m.usingRig, clip: m.rig?.clip, inHand: m.shield.parent === m.rig?.node('handslot.l'), gap: +gap.toFixed(2), coverOut: +cover.x.toFixed(2), body, arm };
+  const tomeRest = { q: m.shield.quaternion.clone(), p: m.shield.position.clone() };
+  m.rig?.dispose();
+  // Parrying dagger: grip at the slot, blade (-Z) along the slot's +Y; no second dagger beside it.
+  m = await settle(stand('assassin', 'rustyDaggers', 'parryDagger'));
+  const slot = m.rig.node('handslot.l');
+  const knife = m.shield.children[0];
+  const along = new V(0, 0, -1).transformDirection(knife.matrixWorld).dot(new V(0, 1, 0).transformDirection(slot.matrixWorld));
+  const grip = knife.getWorldPosition(new V()).distanceTo(slot.getWorldPosition(new V()));
+  out.dagger = { inHand: m.shield.parent === slot, along: +along.toFixed(3), grip: +grip.toFixed(3), second: m.offDagger.children.length };
+  m.rig?.dispose();
+  // A tank blocking with a shield (guard fully up), then a tome in its place.
+  const tank = stand('tank', 'rustyMace', 'ironShield');
+  tank.blocking = true;
+  tank.blockTime = 1;
+  m = await settle(tank);
+  const guardUp = m.guard === 1 && m.rig?.clip === 'Blocking';
+  tank.inv.equipped.offhand = I.makeItem('tome');
+  tank.inv.version++;
+  m.update(tank, 1 / 60);
+  out.swap = { guardUp, turn: +m.shield.quaternion.angleTo(tomeRest.q).toFixed(4), moved: +m.shield.position.distanceTo(tomeRest.p).toFixed(4) };
+  m.rig?.dispose();
+  return out;
+});
+check('on the rig the mage\'s tome is held in the left fist at its spine, cover out, clear of the body and arm in Idle',
+  s.tome.rig && s.tome.clip === 'Idle' && s.tome.inHand && s.tome.gap < 0.1 && s.tome.coverOut > 0.8 && s.tome.body === 0 && s.tome.arm === 0, JSON.stringify(s.tome));
+check('on the rig the parrying dagger is held like the second dagger (grip at the left slot, blade along its +Y)',
+  s.dagger.inHand && s.dagger.along > 0.99 && s.dagger.grip < 0.01 && s.dagger.second === 0, JSON.stringify(s.dagger));
+check('a shield swapped for a tome mid-guard leaves the tome at its own rest on the left slot',
+  s.swap.guardUp && s.swap.turn < 1e-3 && s.swap.moved < 1e-4, JSON.stringify(s.swap));
 
 // 24. Legendary effects.
 s = await run(() => {
@@ -1495,6 +1609,331 @@ await run2(() => {
     return k;
   };
 });
+
+// 34a. Art (milestone 8): every enemy kind shows its rigged model, sized to its collider, feet on the ground.
+s = await run2(async () => {
+  const g = window.game;
+  const A = window.art;
+  const V = g.player.pos.constructor;
+  // Every model asks for its files on its first update (far ones too), then swaps its rig in.
+  for (const m of g.enemies.models) m.update(1 / 60);
+  await A.modelsSettled();
+  for (const m of g.enemies.models) m.update(1 / 60);
+  // Skinned vertices in the pose shown: height, and the lowest point against the enemy's feet.
+  const measure = (m) => {
+    m.root.updateMatrixWorld(true);
+    let lo = 1e9;
+    let hi = -1e9;
+    m.rig.root.traverse((o) => {
+      if (!o.isSkinnedMesh || o.name.endsWith('_outline')) return;
+      for (let i = 0; i < o.geometry.attributes.position.count; i += 3) {
+        const y = o.getVertexPosition(i, new V()).applyMatrix4(o.matrixWorld).y;
+        lo = Math.min(lo, y);
+        hi = Math.max(hi, y);
+      }
+    });
+    return { ratio: +((hi - lo) / m.enemy.stats.topY).toFixed(2), feet: +(lo - m.enemy.pos.y).toFixed(2) };
+  };
+  const out = {};
+  for (const kind of Object.keys(A.ENEMY_ART).filter((k) => k !== 'add')) {
+    const e = window.arena2(kind, 6); // on the flat town square
+    const m = g.enemies.models.find((x) => x.enemy === e);
+    for (let i = 0; i < 3; i++) m.update(1 / 60);
+    out[kind] = m.usingRig && !m.body.visible ? measure(m) : 'placeholder';
+  }
+  // A summoned add: the minion body with a blade, rising out of the ground.
+  const boss = g.adventure.dungeon.boss;
+  const add = g.enemies.spawn('skeleton', boss.pos.x + 4, boss.pos.z, 14);
+  add.summoner = boss;
+  add.frozen = true;
+  const am = g.enemies.models.find((x) => x.enemy === add);
+  am.update(1 / 60);
+  const held = (m, slot, name) => !!m.rig?.node(slot)?.getObjectByName(name);
+  out.add = { rig: am.usingRig, minion: !!am.rig?.node('Skeleton_Minion_Body'), clip: am.rig?.clip, blade: held(am, 'handslot.r', 'Skeleton_Blade') };
+  g.enemies.resetAll();
+  const mk = (kind) => g.enemies.models.find((x) => x.enemy.kind === kind && !x.enemy.summoner);
+  const shown = (m, n) => !!m.rig?.node(n)?.visible;
+  out.props = {
+    skeleton: held(mk('skeleton'), 'handslot.r', 'Skeleton_Blade') && held(mk('skeleton'), 'handslot.l', 'Skeleton_Shield_Small_A'),
+    cultist: held(mk('cultist'), 'handslot.r', 'Skeleton_Staff'),
+    warden: held(mk('warden'), 'handslot.r', 'Skeleton_Axe'),
+    bandit: shown(mk('bandit'), 'Knife') && shown(mk('bandit'), 'Knife_Offhand') && !shown(mk('bandit'), '1H_Crossbow'),
+    goblin: shown(mk('goblin'), '1H_Crossbow') && !shown(mk('goblin'), 'Knife'),
+  };
+  return out;
+});
+{
+  const kinds = Object.entries(s).filter(([k]) => k !== 'add' && k !== 'props');
+  const fit = kinds.every(([, v]) => v !== 'placeholder' && v.ratio > 0.75 && v.ratio < 1.2 && Math.abs(v.feet) < 0.1);
+  check('enemies: every kind shows its rigged model, height near its collider top, feet on the ground', kinds.length === 10 && fit, JSON.stringify(Object.fromEntries(kinds)));
+  check('enemies: a summoned add is the minion body with a blade and rises with Spawn_Ground_Skeletons', s.add.rig && s.add.minion && s.add.blade && s.add.clip === 'Spawn_Ground_Skeletons', JSON.stringify(s.add));
+  check('enemies: weapons and props in hand (skeleton blade + shield, cultist staff, boss axe, bandit knives, goblin crossbow)', Object.values(s.props).every(Boolean), JSON.stringify(s.props));
+}
+
+// 34b. Art: an attack clip follows the game's timings: its measured swing fills the active window.
+s = await run2(() => {
+  const g = window.game;
+  const A = window.art;
+  const p = g.player;
+  const V = p.pos.constructor;
+  const out = {};
+  for (const kind of ['skeleton', 'bandit']) {
+    const e = window.arena2(kind, 1.6, false);
+    const m = g.enemies.models.find((x) => x.enemy === e);
+    const atk = A.ENEMY_ART[kind].attacks[0];
+    const d = m.rig.duration(atk.clip);
+    const [a, b] = [atk.swing[0] * d, atk.swing[1] * d];
+    const hand = m.rig.node('handslot.r');
+    const rec = [];
+    let prev = null;
+    for (let i = 0; i < 150; i++) {
+      p.hp = p.stats.maxHp;
+      g.step(1);
+      g.enemies.updateModels(1 / 60, p.pos);
+      const busy = ['windup', 'active', 'recover'].includes(e.state) && e.comboStep === 0;
+      if (!busy) {
+        if (rec.length) break;
+        continue;
+      }
+      m.root.updateMatrixWorld(true);
+      const w = m.root.worldToLocal(hand.getWorldPosition(new V()));
+      rec.push({ s: e.state, st: e.stateTime, t: m.rig.actions.get(atk.clip).time, clip: m.rig.clip, sp: prev ? w.distanceTo(prev) * 60 : 0 });
+      prev = w;
+    }
+    const of = (st) => rec.filter((r) => r.s === st);
+    const avg = (l) => l.reduce((x, r) => x + r.sp, 0) / Math.max(1, l.length);
+    const ok = (l, lo, hi) => l.every((r) => r.clip === atk.clip && r.t >= lo - 0.01 && r.t <= hi + 0.01);
+    const act = of('active');
+    out[kind] = {
+      frames: `${of('windup').length}/${act.length}/${of('recover').length}`,
+      inWindow: ok(of('windup'), 0, a) && ok(act, a, b) && ok(of('recover'), b, d),
+      // The hand moves fastest in the active window (wind-up measured after its 0.1 s blend in).
+      fast: +(avg(act) / avg(of('windup').filter((r) => r.st > 0.1))).toFixed(1),
+    };
+    e.frozen = true;
+  }
+  return out;
+});
+check('enemies: the attack clip\'s swing lands inside the game\'s active window (skeleton, bandit)', Object.values(s).every((v) => v.inWindow && v.fast > 1.5 && !v.frames.includes('/0/')), JSON.stringify(s));
+
+// 34c. Art: deaths play the death clip once and hold it; the boss's eyes glow ember, phase 2 still
+// smoulders; far sleeping enemies do not advance their mixers.
+s = await run2(() => {
+  const g = window.game;
+  const A = window.art;
+  const p = g.player;
+  const out = {};
+  const model = (e) => g.enemies.models.find((x) => x.enemy === e);
+  for (const kind of ['wolf', 'skeleton', 'spider']) {
+    const e = window.arena2(kind, 4);
+    e.takeHit({ damage: 1e6, poise: 0, knockback: 0, from: e.pos.clone() }, []);
+    e.lootPending = false; // no XP or loot from a test kill
+    const m = model(e);
+    for (let i = 0; i < 5; i++) m.update(1 / 60);
+    const act = m.rig.actions.get(m.rig.clip);
+    out[kind] = { state: e.state, clip: m.rig.clip, want: A.ENEMY_ART[kind].death, once: act.loop === 2200 && act.clampWhenFinished };
+    e.reset();
+  }
+  // The boss: ember eyes, no glow on the body in phase 1, a pulsing ember glow in phase 2.
+  const b = g.adventure.dungeon.boss;
+  b.reset();
+  const bm = model(b);
+  bm.update(1 / 60);
+  const eye = bm.glowMats[0]?.emissive;
+  const body = bm.rigMats[0];
+  const p1 = body.emissiveIntensity;
+  b.phase = 2;
+  bm.update(1 / 60);
+  out.boss = {
+    eye: eye && [eye.r, eye.g, eye.b].map((v) => +v.toFixed(2)),
+    ember: eye && eye.r > 0.8 && eye.g < 0.5 * eye.r && eye.b < 0.1,
+    phase1: +p1.toFixed(2),
+    phase2: +body.emissiveIntensity.toFixed(2),
+    smoulder: [body.emissive.r, body.emissive.g, body.emissive.b].map((v) => +v.toFixed(2)),
+  };
+  b.reset();
+  bm.update(1 / 60);
+  // Mixers: a sleeping enemy 60–160 m away holds its pose; one nearby animates; the far one wakes when it is busy.
+  const slime = window.arena2('slime', 5);
+  const near = model(slime);
+  const dist = (m) => Math.hypot(m.enemy.pos.x - p.pos.x, m.enemy.pos.z - p.pos.z);
+  const far = g.enemies.models.find((m) => m.usingRig && m.enemy.state === 'idle' && Math.abs(m.enemy.pos.y - p.pos.y) < 40 && dist(m) > 70 && dist(m) < 150);
+  const run = (n) => { for (let i = 0; i < n; i++) g.enemies.updateModels(1 / 60, p.pos); };
+  run(3);
+  const [f0, n0] = [far.rig.mixer.time, near.rig.mixer.time];
+  run(10);
+  const [f1, n1] = [far.rig.mixer.time, near.rig.mixer.time];
+  far.enemy.state = 'return';
+  run(5);
+  const f2 = far.rig.mixer.time;
+  far.enemy.reset();
+  out.mixers = { far: +dist(far).toFixed(0), farHeld: f1 === f0, nearRan: n1 > n0, wakes: f2 > f1 };
+  // Everyone back to their camps, frozen, for the checks that follow.
+  for (const e of g.enemies.list) {
+    e.home.copy(window.homes.get(e));
+    e.reset();
+    e.frozen = true;
+  }
+  p.respawn();
+  return out;
+});
+{
+  const deaths = ['wolf', 'skeleton', 'spider'].map((k) => s[k]);
+  check('enemies: dead enemies play their death clip once and hold it', deaths.every((d) => d.state === 'dead' && d.clip === d.want && d.once), JSON.stringify(deaths));
+  check('enemies: the Cinder Warden\'s eyes glow ember; phase 2 still smoulders', s.boss.ember && s.boss.phase1 === 0 && s.boss.phase2 > 0.1 && s.boss.smoulder[0] > s.boss.smoulder[1], JSON.stringify(s.boss));
+  check('enemies: far sleeping enemies do not advance their mixers (near ones and busy far ones do)', s.mixers.farHeld && s.mixers.nearRan && s.mixers.wakes, JSON.stringify(s.mixers));
+}
+
+// 34d. Art fixes: the goblin's own colours, the boar's body, and locomotion clips whose feet stay planted
+// (stride-matched speeds inside the limits; strafes while circling; the boss jogging near 1×).
+s = await run2(() => {
+  const g = window.game;
+  const A = window.art;
+  const p = g.player;
+  const out = {};
+  const model = (e) => g.enemies.models.find((x) => x.enemy === e);
+  const mk = (kind) => g.enemies.models.find((x) => x.enemy.kind === kind && !x.enemy.summoner);
+  // A texture's pixel in palette cell (column, row) of the KayKit 8 × 4 atlas, times the material colour.
+  const cell = (mat, cx, cy) => {
+    const img = mat.map.image;
+    const cv = document.createElement('canvas');
+    cv.width = img.width;
+    cv.height = img.height;
+    const c = cv.getContext('2d');
+    c.drawImage(img, 0, 0);
+    const d = c.getImageData(Math.round(((cx + 0.4) * img.width) / 8), Math.round(((cy + 0.5) * img.height) / 4), 1, 1).data;
+    return [d[0] * mat.color.r, d[1] * mat.color.g, d[2] * mat.color.b].map(Math.round);
+  };
+  const gob = mk('goblin');
+  const ban = mk('bandit');
+  const gm = gob.rig.node('Rogue_Head').material;
+  const bm = ban.rig.node('Rogue_Head').material;
+  const src = A.cloneModel('models/enemies/bandit.glb').getObjectByName('Rogue_Head').material;
+  const [skin, tunic, bskin, btunic] = [cell(gm, 0, 0), cell(gm, 0, 1), cell(bm, 0, 0), cell(bm, 0, 1)];
+  out.goblin = {
+    skin, tunic,
+    green: skin[1] > skin[0] * 1.15 && skin[1] > skin[2] * 1.3,
+    clothesNotGreen: tunic[0] >= tunic[1] && cell(gm, 1, 1)[0] >= cell(gm, 1, 1)[1],
+    ears: gob.rig.node('head').children.filter((o) => o.name.startsWith('Ear_')).length,
+    crossbow: !!gob.rig.node('1H_Crossbow')?.visible,
+  };
+  // The bandit: the file's own texture and a white material, so it looks as it did.
+  out.bandit = { skin: bskin, tunic: btunic, sameMap: bm.map === src.map, white: bm.color.getHex() === 0xffffff, ears: ban.rig.node('head').children.some((o) => o.name.startsWith('Ear_')) };
+  // The boar: its own body (tusks, bristle ridge), nothing left of the bull's horns.
+  const boar = mk('boar');
+  const mats = new Set();
+  const meshes = [];
+  boar.rig.root.traverse((o) => {
+    if (!o.isMesh || o.name.endsWith('_outline')) return;
+    meshes.push(o.name);
+    mats.add(o.material.name);
+  });
+  out.boar = { body: boar.art.body, meshes: meshes.join(), mats: [...mats].join(), horns: meshes.some((n) => /horn|cow|bull/i.test(n)) || [...mats].some((n) => /horn/i.test(n)) };
+  // Locomotion at the AI's speeds (wander = 0.35 × speed, chase, return): the stride-matched clip speed
+  // is inside the limits, so the played speed is the matched one (no cap reached).
+  const drive = (e, m, v, frames = 20) => {
+    const f = e.facingVector();
+    e.state = 'chase';
+    e.vel.copy(f).multiplyScalar(v);
+    for (let i = 0; i < frames; i++) m.update(1 / 60);
+    return { clip: m.loco.clip, want: +m.loco.want.toFixed(2), rate: +m.loco.rate.toFixed(2) };
+  };
+  for (const kind of ['slime', 'spider']) {
+    const e = window.arena2(kind, 6);
+    const m = model(e);
+    const max = A.ENEMY_ART[kind].clipMax ?? 2.5;
+    const chase = drive(e, m, e.stats.speed);
+    const wander = drive(e, m, e.stats.speed * 0.35);
+    out[kind] = { chase, wander, max, ok: [chase, wander].every((r) => r.want === r.rate && r.want <= max && r.want >= 0.4) };
+    if (kind === 'slime') {
+      // The hop's base stays put while down: the model leads and lags the collider by a few cm only.
+      let lead = 0;
+      drive(e, m, e.stats.speed, 1);
+      for (let i = 0; i < 60; i++) {
+        m.update(1 / 60);
+        lead = Math.max(lead, m.rigBody.position.length());
+      }
+      out.slime.lead = +lead.toFixed(3);
+      out.slime.ok &&= chase.clip === 'Jump' && wander.clip === 'Walk' && lead > 0.02 && lead < 0.2;
+    }
+    e.vel.set(0, 0, 0);
+    e.reset();
+  }
+  // The boar's charge (12 m/s) gallops without sliding too (its own limit, 5.5).
+  {
+    const e = window.arena2('boar', 6);
+    const m = model(e);
+    e.state = 'active';
+    e.stateTime = 0.2;
+    e.vel.copy(e.facingVector()).multiplyScalar(e.stats.lunge);
+    for (let i = 0; i < 10; i++) m.update(1 / 60);
+    const ts = m.rig.actions.get('Gallop').timeScale;
+    out.boarCharge = { clip: m.rig.clip, rate: +ts.toFixed(2), want: +(e.stats.lunge / (8.32 * A.ENEMY_ART.boar.scale)).toFixed(2) };
+    e.reset();
+  }
+  // A bandit circling the player (its real AI, between attacks) plays a strafe and leans into it; it
+  // turns back to face the player over its wind-up.
+  {
+    const e = window.arena2('bandit', 2.2, false);
+    const m = model(e);
+    e.state = 'chase';
+    e.cooldown = 5;
+    const clips = new Set();
+    for (let i = 0; i < 45; i++) {
+      p.hp = p.stats.maxHp;
+      g.step(1);
+      m.update(1 / 60);
+      if (i > 20) clips.add(m.rig.clip);
+    }
+    out.circle = { clips: [...clips].join(), mode: m.loco.mode, rate: +m.loco.rate.toFixed(2), yaw: +m.yaw.toFixed(2), speed: +Math.hypot(e.vel.x, e.vel.z).toFixed(2) };
+    e.frozen = true;
+    e.state = 'windup';
+    e.stateTime = 0;
+    for (let i = 0; i < 20; i++) m.update(1 / 60);
+    out.circle.windupYaw = +m.yaw.toFixed(3);
+    e.reset();
+  }
+  // The Cinder Warden: the chase jogs near 1× (phase 1 and the faster phase 2); the charge runs.
+  {
+    const b = g.adventure.dungeon.boss;
+    b.reset();
+    b.frozen = true;
+    const m = model(b);
+    const p1 = drive(b, m, b.stats.speed, 30);
+    b.phase = 2;
+    const p2 = drive(b, m, b.stats.speed * b.rage(), 30);
+    b.move = 'charge';
+    b.state = 'active';
+    b.stateTime = 0.2;
+    b.vel.copy(b.facingVector()).multiplyScalar(b.stats.lunge);
+    for (let i = 0; i < 10; i++) m.update(1 / 60);
+    out.warden = { p1, p2, charge: { clip: m.rig.clip, rate: +m.rig.actions.get('Running_C').timeScale.toFixed(2) } };
+    b.move = null;
+    b.vel.set(0, 0, 0);
+    b.reset();
+    m.update(1 / 60);
+  }
+  for (const e of g.enemies.list) {
+    e.home.copy(window.homes.get(e));
+    e.reset();
+    e.frozen = true;
+  }
+  p.respawn();
+  return out;
+});
+check('enemies: the goblin has green skin, brown clothes and pointed ears (and its crossbow); the bandit keeps its own texture',
+  s.goblin.green && s.goblin.clothesNotGreen && s.goblin.ears === 2 && s.goblin.crossbow && s.bandit.sameMap && s.bandit.white && !s.bandit.ears && s.bandit.tunic[1] > s.bandit.tunic[0],
+  JSON.stringify({ goblin: s.goblin, bandit: s.bandit }));
+check('enemies: the boar is its own model (tusks, bristle ridge), no bull horns left', s.boar.body === 'models/enemies/boar.glb' && !s.boar.horns && /Tusk/.test(s.boar.mats) && /Bristle/.test(s.boar.mats), JSON.stringify(s.boar));
+check('enemies: slime and spider locomotion clips play at their stride-matched speed at chase and wander speeds (no cap reached); the slime hops with its base planted',
+  s.slime.ok && s.spider.ok && s.boarCharge.clip === 'Gallop' && Math.abs(s.boarCharge.rate - s.boarCharge.want) < 0.01,
+  JSON.stringify({ slime: s.slime, spider: s.spider, boarCharge: s.boarCharge }));
+check('enemies: a circling bandit plays a strafe clip and leans into it; it faces the player again over its wind-up',
+  /Running_Strafe_(Left|Right)/.test(s.circle.clips) && !/Walking_A|Running_A/.test(s.circle.clips) && ['left', 'right'].includes(s.circle.mode) && Math.abs(s.circle.yaw) > 0.2 && Math.abs(s.circle.yaw) < 0.9 && Math.abs(s.circle.windupYaw) < 0.05,
+  JSON.stringify(s.circle));
+check('enemies: the Cinder Warden\'s chase jogs near 1× in both phases; only its charge runs',
+  [s.warden.p1, s.warden.p2].every((r) => r.clip === 'Running_B' && r.rate > 0.75 && r.rate < 1.3 && r.rate === r.want) && s.warden.charge.clip === 'Running_C' && s.warden.charge.rate < 2.5,
+  JSON.stringify(s.warden));
 
 // 35. Regions and the map.
 s = await run2(() => {

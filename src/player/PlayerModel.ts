@@ -49,6 +49,60 @@ const dir = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z).norm
 const RIG_GUARD = { hand: new THREE.Vector3(0.22, 0.81, 0.78), elbow: dir(1, -0.7, -0.2), raise: 0.1 };
 /** The shield holder's rotation on the hand slot when not guarding (as `mountRig` puts it). */
 const SHIELD_REST = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+/**
+ * Where an off-hand item rests on the rig's left hand slot: slot units, its turn (set through the
+ * holder's Euler so a shield's reads exactly [0, π, 0], as mounted; `quat` is the same turn), and
+ * its size (1 = metres).
+ */
+interface OffhandRest {
+  pos: THREE.Vector3;
+  rot: THREE.Euler;
+  quat: THREE.Quaternion;
+  size: number;
+}
+const offhandRest = (pos: THREE.Vector3, rot: THREE.Euler, size: number): OffhandRest => ({
+  pos,
+  rot,
+  quat: new THREE.Quaternion().setFromEuler(rot),
+  size,
+});
+/**
+ * Off-hand rests per look; anything else (shields) rests as the pack's shields: 0.16 out from the
+ * slot, facing its +Z, long side along +Y. Left slot frame (measured in Idle): +X runs up the
+ * forearm, +Y is the grip axis (forward), +Z points away from the body.
+ * The tome is held like the pack's own spellbook (mage.glb: spine in the fist, the book running on
+ * out of it along +Y, clasp last), sized like that book (0.34 × 0.43 m), but stood on edge with
+ * the front cover facing out (+Z): the pack's lies flat at the hip in Idle and cuts the robe. It
+ * sits 0.12 down the hand (-X) and a little further out of the fist so the forearm clears it in
+ * the casts. Measured over Idle, walk, run, Spellcast_*, jumps, roll and hits: no body or arm
+ * vertex inside the book past its spine. The parrying dagger is held like the second dagger:
+ * blade out of the fist along +Y.
+ */
+const RIG_OFFHAND_SHIELD = offhandRest(new THREE.Vector3(0, 0.02, 0.16), new THREE.Euler(0, Math.PI, 0), 1);
+const RIG_OFFHAND: Partial<Record<Look, OffhandRest>> = {
+  tome: offhandRest(
+    new THREE.Vector3(-0.12, 0.33, 0),
+    // Book +X (spine → clasp) onto slot +Y, its height onto +X, its front (-Z) onto +Z.
+    new THREE.Euler().setFromRotationMatrix(
+      new THREE.Matrix4().makeBasis(new THREE.Vector3(0, 1, 0), new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, -1)),
+    ),
+    0.85,
+  ),
+  // As BLADE_GRIP.
+  parryDagger: offhandRest(new THREE.Vector3(), new THREE.Euler(Math.PI / 2, 0, 0), 1),
+};
+/**
+ * The left hand slot's turn in rig space in Idle (measured: +X up, +Y forward and 15° out, +Z out
+ * to the left). In the air a held shield keeps the turn it has there (`poseAirShield`).
+ */
+const RIG_AIR_SLOT = (() => {
+  const a = (15 * Math.PI) / 180;
+  return new THREE.Quaternion().setFromRotationMatrix(
+    new THREE.Matrix4().makeBasis(new THREE.Vector3(0, 1, 0), new THREE.Vector3(Math.sin(a), 0, Math.cos(a)), new THREE.Vector3(Math.cos(a), 0, -Math.sin(a))),
+  );
+})();
+/** How long (s) the in-air shield hold takes to ease in on take-off and out on landing (the Idle fade). */
+const RIG_AIR_HOLD = { in: 0.1, out: 0.2 };
 const _gS = new THREE.Vector3();
 const _gE = new THREE.Vector3();
 const _gH = new THREE.Vector3();
@@ -103,6 +157,11 @@ export class PlayerModel {
   private guard = 0;
   /** True while the guard has turned the shield holder away from its mounted rotation. */
   private shieldTurned = false;
+  /** The off-hand holder's rest on the rig for the equipped look (set with the gear). */
+  private offRest = RIG_OFFHAND_SHIELD;
+  /** 0..1: how far a held shield has turned to its in-air hold; true while the holder is moved by it. */
+  private airHold = 0;
+  private airTurned = false;
 
   /** `bodies` can be swapped out by tests (e.g. a missing file to check the fallback). */
   constructor(private bodies: Record<ClassId, string> = HUMANOID.bodies, private clips = HUMANOID.clips) {
@@ -313,6 +372,12 @@ export class PlayerModel {
       const staff = look === 'staff';
       this.sword.quaternion.copy(staff ? STAFF_GRIP : BLADE_GRIP);
       this.sword.position.copy(STAFF_TIP).multiplyScalar(staff ? RIG_STAFF.slide : 0);
+      // Each off-hand look rests its own way (a guard in progress re-turns a shield right after).
+      const rest = (eq.offhand && RIG_OFFHAND[lookOf(eq.offhand)]) || RIG_OFFHAND_SHIELD;
+      this.shield.position.copy(rest.pos);
+      this.shield.rotation.copy(rest.rot);
+      this.shield.scale.setScalar(rest.size / HUMANOID.scale);
+      this.offRest = rest;
     }
     this.offDagger.clear();
     if (look === 'daggers' && eq.weapon && !eq.offhand) this.offDagger.add(buildItemMesh(eq.weapon));
@@ -497,6 +562,39 @@ export class PlayerModel {
     rig.update(dt);
     if (after) after();
     this.poseGuard(rig, p, dt, !after);
+    this.poseAirShield(rig, p, dt);
+  }
+
+  /**
+   * In the air the jump clips lift the left arm out to the side and lay a held shield flat on it,
+   * so the shield keeps the turn (and offset from the fist) it has at the side in Idle instead:
+   * face out, upright. Eased in and out (`RIG_AIR_HOLD`), from whatever the guard left it at
+   * (blocking ends on take-off); the holder gets its rest back once eased out.
+   */
+  private poseAirShield(rig: Rig, p: Player, dt: number): void {
+    const off = p.inv.equipped.offhand;
+    const look = off ? lookOf(off) : null;
+    const shield = look === 'woodShield' || look === 'ironShield';
+    if (shield && p.state === 'air') this.airHold = Math.min(1, this.airHold + dt / RIG_AIR_HOLD.in);
+    else this.airHold = shield ? Math.max(0, this.airHold - dt / RIG_AIR_HOLD.out) : 0;
+    const slot = this.shield.parent;
+    const rest = this.offRest;
+    if (this.airHold <= 0 || !slot) {
+      if (this.airTurned) {
+        this.shield.position.copy(rest.pos);
+        if (this.guard <= 0) this.shield.rotation.copy(rest.rot);
+      }
+      this.airTurned = false;
+      return;
+    }
+    const k = this.airHold * this.airHold * (3 - 2 * this.airHold);
+    // The slot as it turns in Idle, seen from the slot now: slot⁻¹ · rig root · RIG_AIR_SLOT.
+    slot.getWorldQuaternion(_gQ2).invert();
+    rig.root.getWorldQuaternion(_gQ).premultiply(_gQ2).multiply(RIG_AIR_SLOT);
+    this.shield.position.copy(rest.pos).lerp(_gS.copy(rest.pos).applyQuaternion(_gQ), k);
+    if (this.guard <= 0) this.shield.rotation.copy(rest.rot);
+    this.shield.quaternion.slerp(_gQ.multiply(rest.quat), k);
+    this.airTurned = true;
   }
 
   /**
@@ -505,7 +603,8 @@ export class PlayerModel {
    * reach for `RIG_GUARD.hand`), the forearm twisted so the hand slot faces forward, and the
    * shield holder turned to face straight ahead, long side up. Raised over `RIG_GUARD.raise` s of
    * block; lowered as fast when nothing else poses the arms (`free`), at once otherwise. The
-   * holder gets its mounted rotation [0, π, 0] back once lowered.
+   * holder gets the equipped look's rest rotation (`offRest`) back once lowered, so swapping the
+   * shield for a tome or dagger mid-guard leaves that item as it rests.
    */
   private poseGuard(rig: Rig, p: Player, dt: number, free: boolean): void {
     const off = p.inv.equipped.offhand;
@@ -520,7 +619,7 @@ export class PlayerModel {
     const hand = rig.node('hand.l');
     const slot = this.shield.parent;
     if (this.guard <= 0 || !upper || !lower || !hand || !slot) {
-      if (this.shieldTurned) this.shield.rotation.set(0, Math.PI, 0);
+      if (this.shieldTurned) this.shield.rotation.copy(this.offRest.rot);
       this.shieldTurned = false;
       return;
     }

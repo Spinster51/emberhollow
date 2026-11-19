@@ -6,6 +6,8 @@
 
 import type { ClassId } from '../classes/classes';
 import type { Look } from '../items/items';
+import type { EnemyKind } from '../config';
+import type { BossMove } from '../combat/Enemy';
 
 /** KayKit Adventurers (CC0). All four bodies share one rig; the clips live in knight.glb. */
 export const HUMANOID = {
@@ -88,3 +90,287 @@ export const SKILL_CLIPS: Record<string, { clip: string; loop?: boolean; speed?:
   meteor: { clip: 'Spellcast_Long' },
   default: { clip: 'Spellcast_Shoot' },
 };
+
+// ---------------------------------------------------------------- enemies (milestone 8)
+
+/**
+ * One enemy attack on the rig. The clip is scrubbed by the game's timings (ENEMY_STATS, BOSS_MOVES):
+ * [0, swing[0]] over the wind-up, `swing` over the active window, the rest over the recovery.
+ * Where the hit lands decides `swing`: melee and boss moves hit at the middle of the active window,
+ * so `swing` is the measured fast part (the tracked point moving at ≥ 50% of its peak speed: the
+ * right hand slot for humanoids, the head or arm tip for beasts); shots and slams hit on its first
+ * frame, so it starts at the release or the impact; lunges hurt on contact all through it.
+ */
+export interface EnemyAttack {
+  clip: string;
+  swing: [number, number];
+  /** Shown over the wind-up instead: this clip scrubbed from its start to `to` (a fraction). */
+  windup?: { clip: string; to: number };
+  /** Looped over the active window instead (charges); `ground` = its stride speed (model units/s) to match. */
+  loop?: { clip: string; ground: number };
+  /** Looped over the recovery instead. */
+  recover?: string;
+}
+
+/**
+ * A clip and its stride speed: model units per second at clip speed 1, measured from the planted feet
+ * (the soles' travel while on the ground; for an in-place hop, the distance one hop should cover per second).
+ */
+export type Stride = [clip: string, ground: number];
+
+/** Sideways locomotion: clips that travel `angle` radians to the model's left / right of its facing, at `ground`. */
+export interface StrafeClips {
+  left: string;
+  right: string;
+  ground: number;
+  angle: number;
+}
+
+/**
+ * A hopping gait (the slime): the clip's base is on the ground over `contact` (fractions of its cycle; may
+ * wrap past 1) and slides back at `sweep` model units/s meanwhile. Whatever ground speed the clip cannot
+ * cover there is taken up by a small visual lead and lag along the travel, so the base stays put while down.
+ */
+export interface PlantedHop {
+  contact: [number, number];
+  sweep: number;
+}
+
+/** Pointed ears on the head bone (the goblin): the left ear in model units at rest (the right one mirrored). */
+export interface Ears {
+  /** Base point, where the head's own ear is. */
+  at: [number, number, number];
+  /** Direction the ear points (model space: +x the model's left, +y up, +z the way it faces). */
+  dir: [number, number, number];
+  length: number;
+  /** Width at the base; it is a third as thick. */
+  width: number;
+  color: number;
+}
+
+/** A prop from another file, held on a bone (pack props point along the slot's +Y). */
+export interface EnemyWeapon {
+  file: string;
+  bone: string;
+  pos: [number, number, number];
+  rot: [number, number, number];
+}
+
+export interface EnemyArt {
+  body: string;
+  /** Files holding the clips (KayKit bodies share the Adventurers' rig); default: the body's own. */
+  clips?: string[];
+  /** Model units → metres; fitted so the height is near the collider's topY. */
+  scale: number;
+  /** Raise (model units) so the rest pose stands on the ground. */
+  lift?: number;
+  idle: string;
+  /** Idle while chasing (standing still between attacks). */
+  combatIdle?: string;
+  walk: Stride;
+  /** Between walk and run (humanoids); the gait whose stride is nearest the ground speed plays. */
+  jog?: Stride;
+  run: Stride;
+  /** Walking backwards (humanoids); much faster than its stride (a goblin backing off), the model turns and runs instead. */
+  back?: Stride;
+  /** Sideways (humanoids circling or strafing). */
+  strafe?: StrafeClips;
+  /** Fastest playback of a locomotion clip (default 2.5); spider legs churn, a charging boar's blur. */
+  clipMax?: number;
+  /** Hopping clips by name (the slime). */
+  plant?: Record<string, PlantedHop>;
+  /** By combo step (the bandit's and skeleton's second strike uses entry 1). */
+  attacks: EnemyAttack[];
+  /** Boss moves and the phase-2 roar (`phase`: `swing` is the part of the clip shown over the roar). */
+  boss?: Partial<Record<BossMove | 'phase', EnemyAttack>>;
+  /** Stagger clip; none: a procedural flinch. */
+  hit?: string;
+  knockdown?: string;
+  death: string;
+  /** Height (m) of a hop over a lunge's active window (clips that bite in place). */
+  hop?: number;
+  /** Summoned: rise with this clip (speed-up) when spawned. */
+  spawn?: { clip: string; speed: number };
+  /** The pack's own hand-slot props to keep; all others are hidden. */
+  props?: string[];
+  weapons?: EnemyWeapon[];
+  /** Material colours by material name. */
+  colors?: Record<string, number>;
+  /** Multiply every colour by this. */
+  tint?: number;
+  /**
+   * Palette cells to recolour in the model's texture, "column,row" → colour (KayKit atlases: 8 × 4 cells of
+   * vertical gradients); every pixel keeps its shade. The goblin's green skin on the bandit's body.
+   */
+  recolor?: Record<string, number>;
+  ears?: Ears;
+  /** Scale every colour by this (above 1 lightens a dark texture). */
+  brighten?: number;
+  /** Grey the texture (stone) and multiply by this colour. */
+  stone?: number;
+  /** Emissive colour of the 'Glow' material (skeleton eyes). */
+  glow?: number;
+  /** Other files to fetch with this one (the boss's adds). */
+  preload?: string[];
+  /** Culling sphere: the rest pose's, times this (default 1.7; measured over every clip used). */
+  cullPad?: number;
+}
+
+const KAYKIT_CLIPS = [HUMANOID.clips, 'models/enemies/clips_extra.glb'];
+const HAND_R = { bone: 'handslot.r', pos: [0, 0.033, 0], rot: [0, Math.PI, 0] } as const;
+const weapon = (file: string, at: { bone: string; pos: readonly number[]; rot: readonly number[] } = HAND_R): EnemyWeapon => ({
+  file: `models/enemies/${file}.glb`,
+  bone: at.bone,
+  pos: [at.pos[0], at.pos[1], at.pos[2]],
+  rot: [at.rot[0], at.rot[1], at.rot[2]],
+});
+/** KayKit Skeletons weapons; the shield sits where the Adventurers' shields do. */
+const BLADE = weapon('skeleton_blade');
+const SHIELD = weapon('skeleton_shield', { bone: 'handslot.l', pos: [0, 0.017, 0.156], rot: [0, 0, 0] });
+/**
+ * Along the slot's +Y a staff lies flat in Idle (out in front at hip height). Like the player's staff
+ * grip it stands up the slot's -X instead, leaning forward (+Y) and out (+Z): the staff's +Y turned
+ * onto (-1, 0.4, 0.5); slid 0.25 up through the fist so its foot clears the ground.
+ */
+const STAFF = weapon('skeleton_staff', { bone: 'handslot.r', pos: [-0.211, 0.084, 0.105], rot: [0.452, 0.268, 1.062] });
+const a = (clip: string, s0: number, s1: number, more: Partial<EnemyAttack> = {}): EnemyAttack => ({ clip, swing: [s0, s1], ...more });
+
+/**
+ * Shared by humanoid enemies (KayKit rig). Strides are the soles' planted travel (each foot's lowest
+ * vertices, sampled 121 times per clip): walk 0.70, jog 2.21, run 4.42, backwards 0.71; the strafes
+ * travel 4.4 at 60° off the facing (they run diagonally forward), so a sideways circle turns the body 30°.
+ */
+const KAYKIT = {
+  clips: KAYKIT_CLIPS,
+  idle: 'Idle',
+  combatIdle: 'Idle_Combat',
+  walk: ['Walking_A', 0.7] as Stride,
+  jog: ['Running_B', 2.21] as Stride,
+  run: ['Running_A', 4.42] as Stride,
+  back: ['Walking_Backwards', 0.71] as Stride,
+  strafe: { left: 'Running_Strafe_Left', right: 'Running_Strafe_Right', ground: 4.4, angle: Math.PI / 3 },
+  hit: 'Hit_A',
+  knockdown: 'Hit_B',
+  death: 'Death_A',
+};
+const SKELETON = {
+  ...KAYKIT,
+  walk: ['Walking_D_Skeletons', 0.46] as Stride,
+  run: ['Running_C', 4.37] as Stride,
+  death: 'Death_C_Skeletons',
+  // The bones scatter as it falls apart: an arm lands 2.4 rest-radii out.
+  cullPad: 2.6,
+};
+const GOBLIN_SKIN = 0x7fae48;
+const SKELETON_SLICES = [a('1H_Melee_Attack_Slice_Diagonal', 0.37, 0.43), a('1H_Melee_Attack_Slice_Horizontal', 0.18, 0.27)];
+
+/**
+ * Enemy models (`add` = the boss's summoned skeletons). Rest sizes in model units, from the files:
+ * slime 1.83 tall; boar 4.17 tall (to the crest) × 9.36 long (tail included); wolf 2.67 × 5.27; spider 1.95 tall × 5.94 wide;
+ * yeti 3.2; KayKit bodies 2.17 (2.59 with the warrior's helmet, 2.63 with the mage's hat).
+ * Strides: the soles' planted travel (see KAYKIT). The AI's speeds then play every locomotion clip between
+ * about 0.5× and 2× (spider and boar charge excepted, see `clipMax`).
+ */
+export const ENEMY_ART: Record<EnemyKind | 'add', EnemyArt> = {
+  slime: {
+    body: 'models/enemies/slime.glb', scale: 0.48, lift: 0.013,
+    // Walk is a small hop whose base slides back 0.94/s while down (wander: 1.9×); Jump hops in place, played
+    // so one hop covers 1 m (4.8 model units/s at 1×: 1.04× at chase speed). The base stays put while down (`plant`).
+    idle: 'Idle', walk: ['Walk', 0.94], run: ['Jump', 4.8], clipMax: 2,
+    plant: { Walk: { contact: [0.9, 0.27], sweep: 0.94 }, Jump: { contact: [0.97, 0.25], sweep: 0 } },
+    // Leans back, then bites forward (0.33–0.5); the hop carries the lunge.
+    attacks: [a('Bite_Front', 0.3, 0.55)], hop: 0.45,
+    hit: 'HitRecieve', death: 'Death',
+    // The pack's green is very dark under the toon ramp; lighter, it reads like the old slime.
+    brighten: 1.8,
+  },
+  boar: {
+    // A low-poly wild boar (tusks, bristle ridge) skinned to the Quaternius bull's rig and clips; see CREDITS.md.
+    body: 'models/enemies/boar.glb', scale: 0.28, lift: 0.007,
+    // The charge (12 m/s) gallops at 5.2×: the legs blur, but stay planted.
+    idle: 'Idle', walk: ['Walk', 1.64], run: ['Gallop', 8.32], clipMax: 5.5,
+    // Head down over the wind-up, gallop through the charge, the head toss (0.45–0.55) on the recovery.
+    attacks: [a('Attack_Headbutt', 0.33, 0.45, { loop: { clip: 'Gallop', ground: 8.32 } })],
+    hit: 'Idle_HitReact1', death: 'Death',
+    // Dark bristly brown, a darker crested mane stripe from the forehead to the tail, a dusky snout; the ivory
+    // tusks keep the file's colour.
+    colors: { Hide: 0x56402f, Bristle: 0x433126, Snout: 0x80604f },
+  },
+  wolf: {
+    body: 'models/enemies/wolf.glb', scale: 0.45, lift: 0.01,
+    idle: 'Idle', walk: ['Walk', 1.65], run: ['Gallop', 8.55],
+    // The lunge and bite (head forward and down, 0.18–0.5); the fastest burst (0.65–0.78) is the head coming back up.
+    attacks: [a('Attack', 0.2, 0.5)],
+    hit: 'Idle_HitReact1', death: 'Death',
+  },
+  spider: {
+    // The eight tips plant at 1.8–3.7/s (median 2.52): chase speed (4.5 m/s) is 4.5×, fast-churning legs.
+    body: 'models/enemies/spider.glb', scale: 0.4,
+    idle: 'Spider_Idle', walk: ['Spider_Walk', 2.52], run: ['Spider_Walk', 2.52], clipMax: 5,
+    // The pounce: crouch, airborne 0.4–0.75 (the lunge), land.
+    attacks: [a('Spider_Jump', 0.4, 0.75)],
+    death: 'Spider_Death',
+  },
+  golem: {
+    // No lift: the rest pose dips 0.12 below the ground, but Idle stands at +0.02 (Walk dips to -0.12).
+    // Walk swings each block foot like a pendulum and sets it down at the bottom of the swing, sweeping back
+    // at 1.2–1.7/s as it lands (1.4); Run plants at 6.9. Chase speed (2.4 m/s) walks at 1.7×.
+    body: 'models/enemies/golem_yeti.glb', scale: 1.03,
+    idle: 'Idle', walk: ['Walk', 1.4], run: ['Run', 6.9],
+    // Both fists come down over 0.55–0.8 and hit the ground at ~0.8: the slam's blast is the active window's first frame.
+    attacks: [a('Attack', 0.72, 0.88)],
+    hit: 'HitRecieve', death: 'Death', stone: 0xb4ada2,
+  },
+  bandit: {
+    ...KAYKIT, body: 'models/enemies/bandit.glb', scale: 0.85,
+    attacks: [a('Dualwield_Melee_Attack_Slice', 0.45, 0.53), a('Dualwield_Melee_Attack_Chop', 0.4, 0.48)],
+    props: ['Knife', 'Knife_Offhand'],
+  },
+  goblin: {
+    ...KAYKIT, body: 'models/enemies/bandit.glb', scale: 0.64,
+    // Raises and aims the crossbow (0–0.27), the shot, then lowers it.
+    attacks: [a('1H_Ranged_Shoot', 0.27, 0.33)],
+    props: ['1H_Crossbow'],
+    // The bandit's body, its own colours: green skin (face, ears, knees), leather browns for the green tunic and
+    // the cape and trims, dark hair. Atlas cells "column,row" (see `recolor`).
+    recolor: { '0,0': GOBLIN_SKIN, '0,1': 0x6e5638, '1,1': 0x54422c, '1,0': 0x3b2f27 },
+    // Out of the head's own ears (at ±0.5, 1.52), back and up.
+    ears: { at: [0.47, 1.53, 0.0], dir: [1, 0.5, -0.32], length: 0.46, width: 0.22, color: GOBLIN_SKIN },
+  },
+  skeleton: {
+    ...SKELETON, body: 'models/enemies/skeleton_warrior.glb', scale: 0.8,
+    attacks: SKELETON_SLICES, weapons: [BLADE, SHIELD],
+  },
+  add: {
+    ...SKELETON, body: 'models/enemies/skeleton_minion.glb', scale: 0.85,
+    attacks: SKELETON_SLICES, weapons: [BLADE],
+    spawn: { clip: 'Spawn_Ground_Skeletons', speed: 3.5 },
+  },
+  cultist: {
+    ...SKELETON, body: 'models/enemies/skeleton_mage.glb', scale: 0.8,
+    // Staff raised overhead over the wind-up, then the cast's push forward (0.03–0.2) releases the orb.
+    attacks: [a('Spellcast_Shoot', 0.1, 0.2, { windup: { clip: 'Spellcast_Raise', to: 0.3 } })],
+    weapons: [STAFF], glow: 0xc070ff,
+  },
+  warden: {
+    // At 1.75× its strides are long: the chase (3.4 m/s, 4.4 in phase 2) jogs at 0.9–1.1× and only the
+    // charge (15 m/s) runs (Running_C at 2×).
+    ...SKELETON, body: 'models/enemies/skeleton_warrior.glb', scale: 1.75,
+    attacks: [a('1H_Melee_Attack_Slice_Horizontal', 0.18, 0.27)],
+    boss: {
+      sweep: a('1H_Melee_Attack_Slice_Horizontal', 0.18, 0.27),
+      // Leaps (0.15–0.42) and chops down; the axe hits the ground at ~0.55.
+      slam: a('1H_Melee_Attack_Jump_Chop', 0.5, 0.6),
+      charge: a('Running_C', 0, 1, { windup: { clip: 'Idle_Combat', to: 0.3 }, loop: { clip: 'Running_C', ground: 4.37 }, recover: 'Idle_Combat' }),
+      volley: a('Spellcast_Shoot', 0.1, 0.2, { windup: { clip: 'Spellcast_Raise', to: 0.3 } }),
+      nova: a('Spellcast_Raise', 0.22, 0.32),
+      // The roar calls the adds: both arms come up at ~0.65–0.7.
+      phase: a('Spellcast_Summon', 0.35, 0.95),
+    },
+    weapons: [weapon('skeleton_axe')], glow: 0xff6a1e,
+    preload: ['models/enemies/skeleton_minion.glb'],
+  },
+};
+
+/** Rigs further than this (m) from the player only animate while awake (not idle). */
+export const ENEMY_ANIM_RANGE = 60;

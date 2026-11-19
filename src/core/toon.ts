@@ -40,8 +40,11 @@ export function addOutline(mesh: THREE.Mesh, thickness = 0.06): THREE.Mesh {
 
 const shellMats = new Map<number, THREE.MeshBasicMaterial>();
 
-/** Outline material that pushes each vertex out along its normal (works on skinned meshes). */
-function shellMaterial(thickness: number): THREE.MeshBasicMaterial {
+/**
+ * Outline material that pushes each vertex out along its normal (works on skinned meshes), by
+ * `thickness` in the mesh's own units; one shared material per thickness.
+ */
+export function shellMaterial(thickness: number): THREE.MeshBasicMaterial {
   let m = shellMats.get(thickness);
   if (!m) {
     m = new THREE.MeshBasicMaterial({ color: 0x140d0a, side: THREE.BackSide });

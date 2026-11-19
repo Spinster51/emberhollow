@@ -1,6 +1,143 @@
 import * as THREE from 'three';
-import { addOutline, toonMaterial } from '../core/toon';
-import { BOSS_MOVES, type Enemy } from './Enemy';
+import { addOutline, addSkinnedOutline, shellMaterial, toonMaterial } from '../core/toon';
+import { BOSS_MOVES, PHASE_ROAR, type Enemy } from './Enemy';
+import { cloneModel, loadModel, modelClips, modelState, shareSkeletons } from '../core/models';
+import { Rig } from '../core/rig';
+import { ENEMY_ART, HUMANOID, type Ears, type EnemyArt, type EnemyAttack, type PlantedHop, type Stride } from '../art/assets';
+
+/** Every file an enemy's art needs (body, clips, weapons, preloads). */
+const artFiles = (art: EnemyArt): string[] => [
+  art.body, ...(art.clips ?? []), ...(art.weapons ?? []).map((w) => w.file), ...(art.preload ?? []),
+];
+
+/** The clip names an art uses (the rig gets only these: one action per clip per enemy adds up). */
+function usedClips(art: EnemyArt): Set<string> {
+  const out = new Set([art.idle, art.walk[0], art.run[0], art.death]);
+  for (const c of [art.combatIdle, art.hit, art.knockdown, art.spawn?.clip, art.jog?.[0], art.back?.[0], art.strafe?.left, art.strafe?.right]) if (c) out.add(c);
+  for (const atk of [...art.attacks, ...Object.values(art.boss ?? {})]) {
+    if (!atk) continue;
+    out.add(atk.clip);
+    if (atk.windup) out.add(atk.windup.clip);
+    if (atk.loop) out.add(atk.loop.clip);
+    if (atk.recover) out.add(atk.recover);
+  }
+  return out;
+}
+
+/** Culling spheres per body file (model space, rest pose, padded for the clips' reach). */
+const cullSpheres = new Map<string, THREE.Sphere>();
+/** Repainted copies of textures (stone golem, goblin skin), made once per texture and recipe. */
+const paintedMaps = new Map<string, THREE.Texture>();
+/** The boss's phase-2 smoulder colour. */
+const EMBER = new THREE.Color(0xff5a1e);
+const WHITE = new THREE.Color(0xffffff);
+const UP = new THREE.Vector3(0, 1, 0);
+/**
+ * Locomotion clips play at the speed that matches their stride to the ground speed, within these limits
+ * (`EnemyArt.clipMax` raises the top one per kind); the AI's speeds all fall inside them.
+ */
+const CLIP_MIN = 0.4;
+const CLIP_MAX = 2.5;
+const clipSpeed = (v: number, max = CLIP_MAX) => Math.min(max, Math.max(CLIP_MIN, v));
+/** Backing off faster than this times the backwards walk's stride turns the model round to run (with a margin back). */
+const BACK_MAX = 2.2;
+/** How far (radians) a humanoid turns off its logic facing into a strafe or backwards walk; the rest slides. */
+const YAW_MAX = 0.87;
+/** Margin (radians) before the travel direction switches clip sets (forward, strafes, backwards). */
+const DIR_MARGIN = 0.2;
+/** KayKit palette atlases: 8 × 4 cells. */
+const ATLAS: [number, number] = [8, 4];
+const _box = new THREE.Box3();
+const _mbox = new THREE.Box3();
+const _v = new THREE.Vector3();
+const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+const frac = (x: number) => x - Math.floor(x);
+
+type MoveMode = 'fwd' | 'left' | 'right' | 'back' | 'flee';
+
+/** A copy of a texture repainted by `paint` (made once per recipe). Falls back to the original. */
+function paintMap(src: THREE.Texture, recipe: string, paint: (d: ImageData) => void): THREE.Texture {
+  const key = `${src.uuid}|${recipe}`;
+  let t = paintedMaps.get(key);
+  if (t) return t;
+  t = src;
+  const img = src.image as (CanvasImageSource & { width: number; height: number }) | undefined;
+  const cv = img?.width ? document.createElement('canvas') : null;
+  const ctx = cv?.getContext('2d', { willReadFrequently: true });
+  if (img && cv && ctx) {
+    cv.width = img.width;
+    cv.height = img.height;
+    ctx.drawImage(img, 0, 0);
+    const d = ctx.getImageData(0, 0, cv.width, cv.height);
+    paint(d);
+    ctx.putImageData(d, 0, 0);
+    const c = new THREE.CanvasTexture(cv);
+    c.flipY = src.flipY;
+    c.colorSpace = src.colorSpace;
+    c.magFilter = src.magFilter;
+    c.minFilter = src.minFilter;
+    c.wrapS = src.wrapS;
+    c.wrapT = src.wrapT;
+    c.name = `${src.name}_${recipe.length > 16 ? 'recolor' : recipe}`;
+    t = c;
+  }
+  paintedMaps.set(key, t);
+  return t;
+}
+
+const luma = (p: Uint8ClampedArray, i: number) => 0.3 * p[i] + 0.59 * p[i + 1] + 0.11 * p[i + 2];
+
+/** A texture's colours turned to grey (luma), for the stone golem. */
+const stoneMap = (src: THREE.Texture) =>
+  paintMap(src, 'stone', (d) => {
+    const p = d.data;
+    for (let i = 0; i < p.length; i += 4) p[i] = p[i + 1] = p[i + 2] = luma(p, i);
+  });
+
+/**
+ * Palette cells ("column,row" of the atlas) repainted in a colour; each pixel keeps its shade (its luma
+ * against the cell's mean), so the cell's gradient survives. The goblin's skin on the bandit's texture.
+ */
+const recolorMap = (src: THREE.Texture, cells: Record<string, number>) =>
+  paintMap(src, JSON.stringify(cells), (d) => {
+    const p = d.data;
+    const cw = d.width / ATLAS[0];
+    const ch = d.height / ATLAS[1];
+    for (const [cell, hex] of Object.entries(cells)) {
+      const [cx, cy] = cell.split(',').map(Number);
+      const x0 = Math.round(cx * cw), x1 = Math.round((cx + 1) * cw);
+      const y0 = Math.round(cy * ch), y1 = Math.round((cy + 1) * ch);
+      let sum = 0;
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) sum += luma(p, (y * d.width + x) * 4);
+      const mean = Math.max(1, sum / ((x1 - x0) * (y1 - y0)));
+      const rgb = [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255];
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const i = (y * d.width + x) * 4;
+          const k = luma(p, i) / mean;
+          for (let c = 0; c < 3; c++) p[i + c] = rgb[c] * k;
+        }
+      }
+    }
+  });
+
+/**
+ * One pointed ear: a four-sided cone along +Y, its base at the origin, flattened to a leaf (broad across
+ * x, thin along z, so it shows its broad side from the front); shared by every goblin.
+ */
+const earGeometries = new Map<string, THREE.BufferGeometry>();
+function earGeometry(ears: Ears): THREE.BufferGeometry {
+  const key = `${ears.length}/${ears.width}`;
+  let g = earGeometries.get(key);
+  if (!g) {
+    g = new THREE.ConeGeometry(ears.width / 2, ears.length, 4);
+    g.translate(0, ears.length / 2, 0);
+    g.scale(1, 1, 1 / 3);
+    g.computeVertexNormals();
+    earGeometries.set(key, g);
+  }
+  return g;
+}
 
 const box = (w: number, h: number, d: number, mat: THREE.Material, outline = true) => {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -18,9 +155,14 @@ const eyes = (parent: THREE.Object3D, y: number, z: number, gap: number, size = 
   }
 };
 
-/** Placeholder blocky enemy with procedural poses; real models come with the asset pass. */
+/**
+ * An enemy's body. Shows its rigged glTF model (`ENEMY_ART`) once the files have loaded, and the
+ * blocky placeholder with procedural poses until then, or for good if a file fails to load.
+ * Both read the same Enemy state each frame; attack clips are scrubbed to the game's timings.
+ */
 export class EnemyModel {
   readonly root = new THREE.Group();
+  /** The placeholder: shown while loading and if a model fails. */
   private body = new THREE.Group();
   private parts: Record<string, THREE.Object3D> = {};
   private phase = 0;
@@ -28,9 +170,47 @@ export class EnemyModel {
   private lastHp: number;
   private mats: THREE.MeshToonMaterial[] = [];
 
-  constructor(readonly enemy: Enemy) {
+  /** The rigged model, when loaded: `rigBody` hops and tilts it, `rigHolder` turns and scales it. */
+  rig: Rig | null = null;
+  private rigBody = new THREE.Group();
+  private rigHolder = new THREE.Group();
+  /** The art shown (picked on the first update unless given: a summoned skeleton is marked after it is built). */
+  private art: EnemyArt | null;
+  /** 'pending' until the files settle; then the rig, or the placeholder for good. */
+  private artState: 'pending' | 'rig' | 'blocky' = 'pending';
+  /** This enemy's own copies of the model's materials (hit flash, smoulder, tints). */
+  private rigMats: THREE.MeshToonMaterial[] = [];
+  /** Glowing eye materials (left out of the flash). */
+  readonly glowMats: THREE.MeshToonMaterial[] = [];
+  private lastState = '';
+  private lastStateTime = 0;
+  /** Locomotion gaits, slowest first (walk, jog, run; one entry when they share a clip). */
+  private gaits: Stride[] = [];
+  /** The gait playing (index into `gaits`), with a margin so neighbouring gaits do not flicker. */
+  private gait = 0;
+  /** Which way the model travels against its facing: picks the forward, strafe or backwards clips. */
+  private moveMode: MoveMode = 'fwd';
+  /**
+   * Visual turn (radians) of the model off the logic facing: into a strafe's diagonal, round to run when
+   * backing off fast, toward a beast's motion. Locomotion only; it eases back to 0 for every attack, so the
+   * model faces the target over the wind-up (the hit arcs use the logic facing either way).
+   */
+  yaw = 0;
+  private yawTarget = 0;
+  /** The last locomotion clip, its stride-matched speed (`want`) and the speed it plays at (`rate`). Read by tests. */
+  readonly loco = { clip: '', mode: 'fwd' as MoveMode, want: 0, rate: 0 };
+  /** Seconds since this model was made (a summoned add's rise). */
+  private age = 0;
+
+  /** `art` can be given by tests (e.g. a missing file to check the fallback). */
+  constructor(readonly enemy: Enemy, art?: EnemyArt) {
     this.lastHp = enemy.hp;
-    this.root.add(this.body);
+    this.art = art ?? null;
+    this.root.add(this.body, this.rigBody);
+    this.rigBody.add(this.rigHolder);
+    this.rigHolder.rotation.y = Math.PI; // the models face +Z; the game faces -Z
+    this.rigBody.visible = false;
+    for (const f of artFiles(art ?? ENEMY_ART[enemy.kind])) void loadModel(f).catch(() => {});
     switch (enemy.kind) {
       case 'slime':
         this.buildSlime();
@@ -291,8 +471,26 @@ export class EnemyModel {
   private weapon: 'sword' | 'bow' | 'staff' | 'none' = 'none';
   private baseScale = 1;
 
-  update(dt: number): void {
+  /** True once the rigged model is shown (false: placeholder). */
+  get usingRig(): boolean {
+    return this.rig !== null;
+  }
+
+  /** Release the rig and this enemy's own materials (a summoned add leaving). */
+  dispose(): void {
+    this.rig?.dispose();
+    for (const m of [...this.rigMats, ...this.glowMats]) m.dispose();
+    this.root.removeFromParent();
+  }
+
+  /**
+   * `animate` false (far away and asleep): the rig keeps its pose and its mixer does not advance;
+   * position, facing and the death sink still follow the enemy.
+   */
+  update(dt: number, animate = true): void {
     const e = this.enemy;
+    this.syncRig();
+    this.age += dt;
     this.root.position.copy(e.pos);
     this.root.rotation.set(0, e.facing, 0);
     this.body.position.set(0, 0, 0);
@@ -306,6 +504,15 @@ export class EnemyModel {
     // The boss smoulders in its second phase.
     const ember = e.phase === 2 ? 0.25 + Math.sin(performance.now() / 120) * 0.1 : 0;
     for (const m of this.mats) m.emissiveIntensity = Math.max(this.flash * 0.8, ember);
+    if (this.rig) {
+      const f = this.flash * 0.8;
+      for (const m of this.rigMats) {
+        m.emissive.copy(f >= ember ? WHITE : EMBER);
+        m.emissiveIntensity = Math.max(f, ember);
+      }
+      this.updateRig(this.rig, dt, animate);
+      return;
+    }
 
     const speed = Math.hypot(e.vel.x, e.vel.z);
     this.phase += dt * (2 + speed * 2.5);
@@ -325,6 +532,355 @@ export class EnemyModel {
     else if (e.kind === 'boar' || e.kind === 'wolf') this.animBoar(speed);
     else if (e.kind === 'spider') this.animSpider(speed);
     else this.animBandit(speed, dt);
+  }
+
+  // ---------------------------------------------------------------- rigged model
+
+  /** Swap in the rigged model once its files are ready; keep the placeholder if one fails. */
+  private syncRig(): void {
+    if (this.artState !== 'pending') return;
+    const art = (this.art ??= this.enemy.summoner ? ENEMY_ART.add : ENEMY_ART[this.enemy.kind]);
+    const files = artFiles(art);
+    const states = files.map(modelState);
+    if (states.includes('none')) {
+      for (const f of files) void loadModel(f).catch(() => {});
+      return;
+    }
+    if (states.includes('loading')) return;
+    // A missing body or clip file keeps the placeholder; a missing weapon is only left out.
+    const core = [art.body, ...(art.clips ?? [])];
+    const clone = core.some((f) => modelState(f) === 'failed') ? null : cloneModel(art.body);
+    if (!clone) {
+      this.artState = 'blocky';
+      return;
+    }
+    this.buildRig(art, clone);
+    this.artState = 'rig';
+  }
+
+  private buildRig(art: EnemyArt, clone: THREE.Object3D): void {
+    shareSkeletons(clone);
+    const used = usedClips(art);
+    const clips = (art.clips ? art.clips.flatMap(modelClips) : modelClips(art.body)).filter((c) => used.has(c.name));
+    const rig = new Rig(clone, clips);
+    // The pack's own hand-slot props: only the listed ones stay (the bandit's knives, the goblin's crossbow).
+    const slots = [rig.node('handslot.r'), rig.node('handslot.l')];
+    clone.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh && o.parent && slots.includes(o.parent)) o.visible = !!art.props?.includes(o.name);
+    });
+    this.fitCulling(art, clone);
+    for (const w of art.weapons ?? []) {
+      const bone = rig.node(w.bone);
+      const held = cloneModel(w.file);
+      if (!bone || !held) continue;
+      held.position.set(...w.pos);
+      held.rotation.set(...w.rot);
+      bone.add(held);
+    }
+    // Outlines are grown in model units (0.04 when loaded): models shrunk below the player's scale
+    // get thicker ones, so every outline is at least the player's ~3 cm.
+    const shell = art.scale < HUMANOID.scale ? +(0.04 * (HUMANOID.scale / art.scale)).toFixed(4) : 0.04;
+    const outline = art.scale < HUMANOID.scale ? shellMaterial(shell) : null;
+    // Own materials: the flash and the smoulder are per enemy; colours per kind.
+    const made = new Map<THREE.Material, THREE.MeshToonMaterial>();
+    clone.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh && mesh.name.endsWith('_outline') && outline) mesh.material = outline;
+      if (!mesh.isMesh || mesh.name.endsWith('_outline')) return;
+      const src = mesh.material as THREE.MeshToonMaterial;
+      let m = made.get(src);
+      if (!m) {
+        m = src.clone();
+        const named = art.colors?.[src.name];
+        if (named !== undefined) m.color.setHex(named);
+        if (art.tint !== undefined) m.color.multiply(new THREE.Color(art.tint));
+        if (art.recolor && m.map) m.map = recolorMap(m.map, art.recolor);
+        if (art.brighten !== undefined) m.color.multiplyScalar(art.brighten);
+        if (art.stone !== undefined) {
+          if (m.map) m.map = stoneMap(m.map);
+          m.color.multiply(new THREE.Color(art.stone));
+        }
+        if (src.name === 'Glow') {
+          // Eyes: the emissive colour alone (a lit white base would wash a tint out).
+          if (art.glow !== undefined) {
+            m.color.setHex(0x000000);
+            m.emissive.setHex(art.glow);
+            m.emissiveIntensity = 1;
+          }
+          this.glowMats.push(m);
+        } else {
+          m.emissive.setHex(0xffffff);
+          m.emissiveIntensity = 0;
+          this.rigMats.push(m);
+        }
+        made.set(src, m);
+      }
+      mesh.material = m;
+    });
+    if (art.ears) this.addEars(art.ears, rig, clone, shell);
+    const gaits = [art.walk, art.jog, art.run].filter((g): g is Stride => !!g);
+    this.gaits = gaits.filter((g, i) => i === 0 || g[0] !== gaits[i - 1][0] || g[1] !== gaits[i - 1][1]);
+    this.rigHolder.scale.setScalar(art.scale);
+    this.rigHolder.position.y = (art.lift ?? 0) * art.scale;
+    this.rigHolder.add(clone);
+    this.rig = rig;
+    this.lastState = '';
+    rig.play(art.idle, { fade: 0 });
+    this.body.visible = false;
+    this.rigBody.visible = true;
+  }
+
+  /**
+   * Pointed ears on the head bone, placed in model space at rest (the clone is unposed and has no parent
+   * yet, so its world space is model space) and carried by the bone from then on.
+   */
+  private addEars(ears: Ears, rig: Rig, clone: THREE.Object3D, shell: number): void {
+    const head = rig.node(HUMANOID.head);
+    if (!head) return;
+    clone.updateMatrixWorld(true);
+    const toHead = head.matrixWorld.clone().invert();
+    const mat = toonMaterial(ears.color, { emissive: 0xffffff, emissiveIntensity: 0 });
+    mat.name = 'Ears';
+    this.rigMats.push(mat);
+    const geo = earGeometry(ears);
+    const q = new THREE.Quaternion();
+    const m = new THREE.Matrix4();
+    for (const side of [1, -1]) {
+      const ear = new THREE.Mesh(geo, mat);
+      ear.name = side > 0 ? 'Ear_L' : 'Ear_R';
+      ear.castShadow = true;
+      q.setFromUnitVectors(UP, _v.set(side * ears.dir[0], ears.dir[1], ears.dir[2]).normalize());
+      m.compose(_v.set(side * ears.at[0], ears.at[1], ears.at[2]), q, new THREE.Vector3(1, 1, 1));
+      m.premultiply(toHead).decompose(ear.position, ear.quaternion, ear.scale);
+      addSkinnedOutline(ear, shell);
+      head.add(ear);
+    }
+  }
+
+  /**
+   * Skinned meshes are culled by a bounding sphere three.js computes once, from whatever pose they
+   * are in then. Every skinned mesh gets the whole body's rest-pose sphere instead, padded so that
+   * leaps, swings and death falls stay inside it (no popping at the screen edge).
+   */
+  private fitCulling(art: EnemyArt, clone: THREE.Object3D): void {
+    clone.updateMatrixWorld(true);
+    const skinned: THREE.SkinnedMesh[] = [];
+    clone.traverse((o) => (o as THREE.SkinnedMesh).isSkinnedMesh && skinned.push(o as THREE.SkinnedMesh));
+    let sphere = cullSpheres.get(art.body);
+    if (!sphere) {
+      _box.makeEmpty();
+      for (const m of skinned) {
+        if (m.name.endsWith('_outline')) continue;
+        m.computeBoundingBox();
+        _box.union(_mbox.copy(m.boundingBox!).applyMatrix4(m.matrixWorld));
+      }
+      sphere = _box.getBoundingSphere(new THREE.Sphere());
+      sphere.radius *= art.cullPad ?? 1.7;
+      cullSpheres.set(art.body, sphere);
+    }
+    for (const m of skinned) {
+      // The sphere is in model space: right for meshes placed at the model's origin (all of ours).
+      if (m.matrixWorld.equals(clone.matrixWorld)) m.boundingSphere = sphere.clone();
+      else m.frustumCulled = false;
+    }
+  }
+
+  private updateRig(rig: Rig, dt: number, animate: boolean): void {
+    const e = this.enemy;
+    this.rigBody.position.set(0, 0, 0);
+    this.rigBody.rotation.set(0, 0, 0);
+    if (e.state === 'dead') {
+      // The death clip, then sink into the ground (as the placeholder does).
+      this.rigBody.position.y = -Math.max(0, e.stateTime - 1.2) * 0.8;
+      this.root.visible = e.stateTime < 3;
+    } else this.root.visible = true;
+    if (!animate) return;
+    this.yawTarget = 0;
+    this.poseRig(rig, this.art!);
+    // Ease into the travel direction while moving; back to the logic facing (quicker) for everything else.
+    // A dying model keeps its turn.
+    if (e.state !== 'dead') {
+      const loco = e.state === 'idle' || e.state === 'chase' || e.state === 'return';
+      this.yaw = wrapAngle(this.yaw + wrapAngle(this.yawTarget - this.yaw) * (1 - Math.exp(-(loco ? 10 : 18) * dt)));
+    }
+    this.rigHolder.rotation.y = Math.PI + this.yaw; // the models face +Z; the game faces -Z
+    rig.update(dt);
+  }
+
+  /** Map the enemy's state onto the rig's clips. */
+  private poseRig(rig: Rig, art: EnemyArt): void {
+    const e = this.enemy;
+    const entered = e.state !== this.lastState || e.stateTime < this.lastStateTime;
+    this.lastState = e.state;
+    this.lastStateTime = e.stateTime;
+    switch (e.state) {
+      case 'dead':
+        if (entered) rig.play(art.death, { loop: false, fade: 0.1 });
+        break;
+      case 'stagger': {
+        const clip = e.staggerKind === 'knockdown' ? (art.knockdown ?? art.hit) : art.hit;
+        if (clip) {
+          if (entered) rig.play(clip, { loop: false, fade: 0.05, restart: true });
+          break;
+        }
+        // No hit clip (spider): rear back and settle.
+        if (entered) rig.play(art.idle, { fade: 0.1 });
+        this.rigBody.rotation.x = 0.35 * Math.sin(Math.min(1, e.stateTime / 0.35) * Math.PI);
+        break;
+      }
+      case 'windup':
+      case 'active':
+      case 'recover':
+        this.scrubAttack(rig, art);
+        break;
+      case 'phase': {
+        const roar = art.boss?.phase;
+        if (!roar) {
+          rig.play(art.combatIdle ?? art.idle, { fade: 0.2 });
+          break;
+        }
+        const k = Math.min(1, e.stateTime / PHASE_ROAR);
+        rig.scrub(roar.clip, (roar.swing[0] + k * (roar.swing[1] - roar.swing[0])) * rig.duration(roar.clip), 0.15);
+        break;
+      }
+      default:
+        this.locomotion(rig, art);
+    }
+  }
+
+  /**
+   * Idle or a locomotion clip, its speed matched to the ground speed so the planted feet stay put; a
+   * summoned add first rises. The travel direction against the facing picks the clip set: forward (walk,
+   * jog or run by speed), a strafe, or walking backwards; the model turns by the rest (`yaw`). Beasts have
+   * only forward clips and turn all the way toward their motion.
+   */
+  private locomotion(rig: Rig, art: EnemyArt): void {
+    const e = this.enemy;
+    if (art.spawn && e.summoner && this.age < rig.duration(art.spawn.clip) / art.spawn.speed) {
+      rig.play(art.spawn.clip, { loop: false, speed: art.spawn.speed, fade: 0 });
+      return;
+    }
+    const h = Math.hypot(e.vel.x, e.vel.z);
+    if (h < 0.3) {
+      rig.play(e.state === 'chase' && art.combatIdle ? art.combatIdle : art.idle, { fade: 0.25 });
+      // Setting off again starts from the walk (and climbs to the gait the speed asks for).
+      this.gait = 0;
+      this.moveMode = 'fwd';
+      return;
+    }
+    // Travel direction against the facing: 0 ahead, + to the left (the game's heading convention).
+    const theta = wrapAngle(Math.atan2(-e.vel.x, -e.vel.z) - e.facing);
+    const mode = this.pickMode(art, theta, h);
+    const st = art.strafe;
+    const lean = (a: number) => Math.max(-YAW_MAX, Math.min(YAW_MAX, a));
+    let stride: Stride;
+    if ((mode === 'left' || mode === 'right') && st) {
+      stride = [mode === 'left' ? st.left : st.right, st.ground];
+      this.yawTarget = lean(theta - (mode === 'left' ? st.angle : -st.angle));
+    } else if (mode === 'back' && art.back) {
+      stride = art.back;
+      this.yawTarget = lean(wrapAngle(theta - Math.PI));
+    } else {
+      stride = this.pickGait(art, h);
+      // Humanoids lean into a forward diagonal; beasts, and anyone turning round to run, face the motion.
+      this.yawTarget = mode === 'fwd' && (st || art.back) ? lean(theta) : theta;
+    }
+    const want = h / (stride[1] * art.scale);
+    const rate = clipSpeed(want, art.clipMax);
+    const act = rig.play(stride[0], { speed: rate, fade: 0.2 });
+    Object.assign(this.loco, { clip: stride[0], mode, want, rate });
+    const hop = art.plant?.[stride[0]];
+    if (hop && act) this.plantHop(hop, act, rig.duration(stride[0]), h, rate, art);
+  }
+
+  /** Forward, a strafe or backwards: the clip set whose travel is nearest the direction (with a margin). */
+  private pickMode(art: EnemyArt, theta: number, h: number): MoveMode {
+    const st = art.strafe;
+    const dirs: [MoveMode, number][] = [['fwd', 0]];
+    if (st) dirs.push(['left', st.angle], ['right', -st.angle]);
+    if (art.back || st) dirs.push(['back', Math.PI]);
+    const cur = this.moveMode === 'flee' ? 'back' : this.moveMode;
+    let best: MoveMode = 'fwd';
+    let bestD = Infinity;
+    for (const [m, a] of dirs) {
+      const d = Math.abs(wrapAngle(theta - a)) - (m === cur ? DIR_MARGIN : 0);
+      if (d < bestD) [best, bestD] = [m, d];
+    }
+    if (best === 'back') {
+      // Backing off faster than the backwards walk can show: turn round and run.
+      const r = art.back ? h / (art.back[1] * art.scale) : Infinity;
+      best = r > BACK_MAX * (this.moveMode === 'flee' ? 0.8 : 1) ? 'flee' : 'back';
+    }
+    this.moveMode = best;
+    return best;
+  }
+
+  /** Walk, jog or run: the gait whose stride is nearest the ground speed (by ratio), with a 15% margin. */
+  private pickGait(art: EnemyArt, h: number): Stride {
+    const g = this.gaits;
+    const v = (i: number) => g[i][1] * art.scale;
+    let i = Math.min(this.gait, g.length - 1);
+    while (i < g.length - 1 && h > Math.sqrt(v(i) * v(i + 1)) * 1.15) i++;
+    while (i > 0 && h < Math.sqrt(v(i - 1) * v(i)) * 0.85) i--;
+    this.gait = i;
+    return g[i];
+  }
+
+  /**
+   * A hop's base stays put while it is down: over the contact part of the cycle the model lags back by
+   * the ground the clip's own sweep does not cover, and catches up again in the air (the slime's chase:
+   * ±14 cm around its collider).
+   */
+  private plantHop(hop: PlantedHop, act: THREE.AnimationAction, dur: number, h: number, rate: number, art: EnemyArt): void {
+    const e = this.enemy;
+    const resid = h - hop.sweep * art.scale * rate;
+    if (resid <= 0 || dur <= 0) return;
+    const cf = frac(hop.contact[1] - hop.contact[0]);
+    const u = frac(act.time / dur - hop.contact[0]);
+    const a = (resid * cf * dur) / rate / 2;
+    const off = u < cf ? a * (1 - (2 * u) / cf) : a * ((2 * (u - cf)) / (1 - cf) - 1);
+    _v.set(e.vel.x, 0, e.vel.z).normalize().applyAxisAngle(UP, -e.facing).multiplyScalar(off);
+    this.rigBody.position.add(_v);
+  }
+
+  /** The attack in progress and its timings (the game's, never the clip's). */
+  private attack(art: EnemyArt): { atk: EnemyAttack; windup: number; active: number; recover: number } {
+    const e = this.enemy;
+    if (e.move) {
+      const mv = BOSS_MOVES[e.move];
+      const r = e.rage();
+      return { atk: art.boss?.[e.move] ?? art.attacks[0], windup: mv.windup / r, active: mv.active, recover: mv.recover / r };
+    }
+    const s = e.stats;
+    return {
+      atk: art.attacks[e.comboStep % art.attacks.length],
+      windup: s.combo && e.comboStep > 0 ? s.windup * 0.6 : s.windup,
+      active: s.active,
+      recover: s.recover,
+    };
+  }
+
+  /**
+   * Attacks follow the game's timings: the clip's wind-up part is stretched over the wind-up, its
+   * swing over the active window and the rest over the recovery (or the attack's own clips there).
+   */
+  private scrubAttack(rig: Rig, art: EnemyArt): void {
+    const e = this.enemy;
+    const { atk, windup, active, recover } = this.attack(art);
+    const d = rig.duration(atk.clip);
+    const [s0, s1] = atk.swing;
+    const st = e.stateTime;
+    if (e.state === 'windup') {
+      const k = Math.min(1, st / Math.max(0.01, windup));
+      if (atk.windup) rig.scrub(atk.windup.clip, k * atk.windup.to * rig.duration(atk.windup.clip), 0.1);
+      else rig.scrub(atk.clip, k * s0 * d, 0.08);
+    } else if (e.state === 'active') {
+      const k = Math.min(1, st / Math.max(0.01, active));
+      if (atk.loop) rig.play(atk.loop.clip, { speed: clipSpeed(Math.hypot(e.vel.x, e.vel.z) / (atk.loop.ground * art.scale), art.clipMax), fade: 0.1 });
+      else rig.scrub(atk.clip, (s0 + k * (s1 - s0)) * d, 0.06);
+      if (art.hop) this.rigBody.position.y = Math.sin(k * Math.PI) * art.hop;
+    } else if (atk.recover) rig.play(atk.recover, { fade: 0.15 });
+    else rig.scrub(atk.clip, (s1 + Math.min(1, st / Math.max(0.01, recover)) * (1 - s1)) * d, 0.1);
   }
 
   private animSlime(_dt: number): void {

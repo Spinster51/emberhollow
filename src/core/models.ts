@@ -58,6 +58,25 @@ export function cloneModel(path: string): THREE.Object3D | null {
 }
 
 /**
+ * SkeletonUtils gives every skinned mesh of a clone its own Skeleton (each outline shell too), and
+ * three.js updates and uploads each one every frame. Meshes bound to the same bones with the same
+ * inverse bind matrices (one glTF skin) can share a single Skeleton: same pose, a fraction of the work.
+ */
+export function shareSkeletons(root: THREE.Object3D): void {
+  const shared: THREE.Skeleton[] = [];
+  root.traverse((o) => {
+    const m = o as THREE.SkinnedMesh;
+    if (!m.isSkinnedMesh) return;
+    const k = m.skeleton;
+    const same = shared.find(
+      (s) => s.bones.length === k.bones.length && s.bones.every((b, i) => b === k.bones[i]) && s.boneInverses.every((inv, i) => inv.equals(k.boneInverses[i])),
+    );
+    if (same) m.skeleton = same;
+    else shared.push(k);
+  });
+}
+
+/**
  * A copy of one named node of a loaded model (with its children, outline included) and its
  * local transform, e.g. a helmet off a character; null if the file is not ready or lacks it.
  * For plain meshes: the copy shares geometry and materials with the file, so clone a material
@@ -94,6 +113,12 @@ function prepare(gltf: GLTF): void {
     let toon = mats.get(src);
     if (!toon) {
       toon = toonMaterial(src.color ?? 0xffffff, { map: src.map ?? null });
+      // Names let callers recolour one part (e.g. a body's hide); emissive keeps glowing eyes glowing.
+      toon.name = src.name;
+      if (src.emissive && src.emissive.getHex() !== 0) {
+        toon.emissive.copy(src.emissive);
+        toon.emissiveIntensity = src.emissiveIntensity ?? 1;
+      }
       if (toon.map) {
         toon.map.colorSpace = THREE.SRGBColorSpace;
         // Keep the atlas crisp at the game's low render resolution.
