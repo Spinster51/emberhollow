@@ -41,6 +41,7 @@ Browser 3D action RPG (Three.js + TypeScript + Vite). Owner play-tests; Claude w
 - Veloren (GPL-3.0) was studied for ideas/numbers only — never copy its code.
 - Assets: CC0 preferred (KayKit, Quaternius, Kenney, Poly Haven); CC-BY allowed with credit (owner, M8: personal game). Source extra models through the Blender MCP (Poly Haven, Sketchfab; Poly Pizza stays off). List every model with author, URL and licence in `CREDITS.md`.
 - Multi-agent work: the main session plans and reviews; subagents do the work. Haiku for read-only file scans, one subagent per category, and state each subagent's model and task before launching. Only one agent at a time may use the repo's test port (4179) or Blender.
+- Workers (owner, 2026-11-20): the main build job goes to the `agy-neon` subagent (`.claude/agents/agy-neon.md`). It runs on Sonnet 5.5, hands the brief to Gemini 4 Hydrogen High through the Antigravity CLI (`agy -p … --model gemini-4-hydrogen-high`; owner switched from Neon Medium on 2026-11-20; background run, JSON result with `conversation_id` for follow-ups), checks the result itself (diff, hard rules, `npm test`, screenshots) and sends follow-ups. Other subagent work runs on Sonnet 5.5 (`model: "sonnet"`), not Opus. agy has the Blender MCP too (`agy mcp add blender uvx blender-mcp`).
 - Commit and push to `origin main` (github.com/Spinster51/emberhollow) after each verified step — the cloud container is wiped between sessions.
 - Break multi-step work into small tasks; mark done only when verified.
 
