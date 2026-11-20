@@ -58,9 +58,33 @@ export const TUNING = {
     burn: { dps: 4, time: 3 },
     lifesteal: 0.08,
     regen: 2,
-    reach: 2.4,
+    reach: 2.2,
     /** Total arc of a sword swing, degrees. */
-    arc: 120,
+    arc: 110,
+    /** Per-class melee combo reach / arc overrides (Option C). */
+    classes: {
+      warrior: { step3Arc: 100 },
+      tank: { reach: 2.0, arc1: 110, arc2: 100 },
+      assassin: { reach: 1.7, arc: 105 },
+    },
+    /** Active skill reaches, radii and arcs (metres, degrees). */
+    skills: {
+      chargeReach: 1.4,
+      whirlwindReach: 2.8,
+      warCryRadius: 10,
+      earthsplitterLength: 7,
+      earthsplitterHalfWidth: 1.2,
+      riposteReach: 2.3,
+      riposteArc: 120,
+      tauntRadius: 10,
+      shieldBashReach: 1.8,
+      shieldBashArc: 100,
+      frostNovaRadius: 5,
+      shadowstepRange: 12,
+      shadowstepBehind: 1.1,
+      eviscerateReach: 2.0,
+      eviscerateArc: 90,
+    },
     /** Extra roll stamina when rolling out of an attack's wind-up or recovery. */
     rollCancelExtra: 10,
     block: { moveFactor: 0.4, arc: 90, strength: 0.4, parryWindow: 0.2 },
@@ -99,6 +123,34 @@ export const TUNING = {
     sleepDistance: 110,
     /** Per level above an enemy's base level: HP ×(1 + hp), damage ×(1 + damage). */
     perLevel: { hp: 0.3, damage: 0.15, poise: 0.1 },
+    /** Melee hit reach added to `stats.range` and melee hit arc (degrees). */
+    meleeMargin: 0.25,
+    meleeArc: 100,
+    /** Melee AI circling and combo follow-up distances added to `stats.range`. */
+    meleeCircleRange: 1.5,
+    meleeCircleKeep: 0.5,
+    meleeComboRange: 0.8,
+    /** Contact margin added to `stats.radius + playerRadius` for lunges and charges. */
+    lungeMargin: 0.35,
+    /** Default projectile spawn height above `stats.centreY` and forward offset. */
+    projectileYOffset: 0.2,
+    projectileFwd: 0.5,
+    /** Vertical tolerance for enemy slams. */
+    slamY: 2,
+    /** Cinder Warden boss chase, reach and projectile tuning. */
+    boss: {
+      closeRange: 3.5,
+      stopDistance: 2.6,
+      longRangeMin: 8,
+      longRangeMax: 22,
+      sweepReach: 3.5,
+      sweepArc: 140,
+      chargeMargin: 1.1,
+      novaRadius: 9,
+      volleyY: 2.2,
+      volleySpread: 0.22,
+      hitY: 2.5,
+    },
   },
 };
 
@@ -133,6 +185,8 @@ export interface EnemyStats {
   keep?: number;
   projectile?: 'arrow' | 'orb';
   projectileSpeed?: number;
+  /** Projectile spawn height above the enemy's feet (default `centreY + projectileYOffset`). */
+  projectileY?: number;
   /** Slam radius. */
   aoe?: number;
   /** Lunge hits poison the player. */
@@ -152,22 +206,22 @@ export const ENEMY_STATS: Record<EnemyKind, EnemyStats> = {
     damage: 8, poiseDamage: 8, knockback: 3, cooldown: 1.2, lunge: 5,
   }),
   boar: enemy({
-    name: 'Boar', style: 'charge', baseLevel: 2, hp: 60, poise: 40, radius: 0.6, centreY: 0.7, topY: 1.3,
+    name: 'Boar', style: 'charge', baseLevel: 2, hp: 60, poise: 40, radius: 0.75, centreY: 0.7, topY: 1.3,
     speed: 3.5, aggro: 14, leash: 30, range: 9, windup: 0.7, active: 1.1, recover: 1.0,
     damage: 18, poiseDamage: 30, knockback: 9, cooldown: 2.5, lunge: 12,
   }),
   bandit: enemy({
     name: 'Bandit', style: 'melee', baseLevel: 3, hp: 70, poise: 35, radius: 0.4, centreY: 1.2, topY: 2.1,
-    speed: 4.2, aggro: 14, leash: 30, range: 2.0, windup: 0.4, active: 0.15, recover: 0.5,
+    speed: 4.2, aggro: 14, leash: 30, range: 1.5, windup: 0.4, active: 0.15, recover: 0.5,
     damage: 12, poiseDamage: 14, knockback: 3, cooldown: 1.0, lunge: 3, combo: true,
   }),
   wolf: enemy({
-    name: 'Wolf', style: 'lunge', baseLevel: 5, hp: 55, poise: 25, radius: 0.5, centreY: 0.6, topY: 1.2,
+    name: 'Wolf', style: 'lunge', baseLevel: 5, hp: 55, poise: 25, radius: 0.65, centreY: 0.6, topY: 1.2,
     speed: 6, aggro: 16, leash: 35, range: 3.5, windup: 0.35, active: 0.35, recover: 0.5,
     damage: 14, poiseDamage: 14, knockback: 4, cooldown: 1.2, lunge: 10,
   }),
   spider: enemy({
-    name: 'Spider', style: 'lunge', baseLevel: 6, hp: 50, poise: 20, radius: 0.55, centreY: 0.45, topY: 0.9,
+    name: 'Spider', style: 'lunge', baseLevel: 6, hp: 50, poise: 20, radius: 0.9, centreY: 0.45, topY: 0.9,
     speed: 4.5, aggro: 12, leash: 30, range: 3, windup: 0.4, active: 0.3, recover: 0.6,
     damage: 10, poiseDamage: 10, knockback: 2, cooldown: 1.4, lunge: 8, poison: true,
   }),
@@ -175,29 +229,31 @@ export const ENEMY_STATS: Record<EnemyKind, EnemyStats> = {
     name: 'Goblin Archer', style: 'ranged', baseLevel: 7, hp: 40, poise: 15, radius: 0.35, centreY: 0.8, topY: 1.5,
     speed: 4.5, aggro: 22, leash: 35, range: 18, windup: 0.7, active: 0.1, recover: 0.6,
     damage: 12, poiseDamage: 8, knockback: 2, cooldown: 1.6, lunge: 0, keep: 11, projectile: 'arrow', projectileSpeed: 24,
+    projectileY: 0.65,
   }),
   skeleton: enemy({
     name: 'Skeleton', style: 'melee', baseLevel: 10, hp: 90, poise: 40, radius: 0.4, centreY: 1.2, topY: 2.1,
-    speed: 3.8, aggro: 15, leash: 30, range: 2.0, windup: 0.45, active: 0.15, recover: 0.5,
+    speed: 3.8, aggro: 15, leash: 30, range: 1.6, windup: 0.45, active: 0.15, recover: 0.5,
     damage: 18, poiseDamage: 16, knockback: 3, cooldown: 1.1, lunge: 3, combo: true,
   }),
   golem: enemy({
     name: 'Stone Golem', style: 'slam', baseLevel: 12, hp: 260, poise: 120, radius: 1.0, centreY: 1.6, topY: 3.3,
     speed: 2.4, aggro: 14, leash: 28, range: 3.0, windup: 1.0, active: 0.2, recover: 1.2,
-    damage: 40, poiseDamage: 60, knockback: 9, cooldown: 2.4, lunge: 0, aoe: 3.5,
+    damage: 40, poiseDamage: 60, knockback: 9, cooldown: 2.4, lunge: 0, aoe: 3.2,
   }),
   cultist: enemy({
     name: 'Cultist', style: 'ranged', baseLevel: 11, hp: 70, poise: 25, radius: 0.4, centreY: 1.2, topY: 2.1,
     speed: 3.5, aggro: 22, leash: 32, range: 18, windup: 0.9, active: 0.1, recover: 0.7,
     damage: 24, poiseDamage: 20, knockback: 4, cooldown: 2.2, lunge: 0, keep: 12, projectile: 'orb', projectileSpeed: 13,
+    projectileY: 1.4,
   }),
   // The dungeon boss (DESIGN §7). Moves: sweep, slam, charge; phase 2 adds orb volleys, a fire
   // nova and two skeleton adds, and everything gets faster. Wind-ups below are per move.
   warden: enemy({
     name: 'The Cinder Warden', style: 'boss', baseLevel: 16, hp: 2600, poise: 400, radius: 1.3, centreY: 2.3, topY: 4.6,
-    speed: 3.4, aggro: 24, leash: 60, range: 4.2, windup: 0.85, active: 0.25, recover: 0.9,
-    damage: 42, poiseDamage: 45, knockback: 8, cooldown: 1.3, lunge: 15, aoe: 5.5,
-    projectile: 'orb', projectileSpeed: 14, phase2: 0.5,
+    speed: 3.4, aggro: 24, leash: 60, range: 3.5, windup: 0.85, active: 0.25, recover: 0.9,
+    damage: 42, poiseDamage: 45, knockback: 8, cooldown: 1.3, lunge: 15, aoe: 4.8,
+    projectile: 'orb', projectileSpeed: 14, projectileY: 2.2, phase2: 0.5,
   }),
 };
 

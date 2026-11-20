@@ -26,6 +26,8 @@ import { loadSettings, saveSettings, type Settings } from './core/settings';
 import { sound } from './core/sound';
 import { SettingsUI } from './ui/SettingsUI';
 import type { Quality } from './core/settings';
+import { SlashTrails } from './combat/SlashTrails';
+import { Telegraphs } from './combat/Telegraphs';
 
 const STEP = 1 / 60;
 
@@ -65,6 +67,8 @@ export class Game {
   readonly classSelect: ClassSelect;
   readonly home: Home;
   readonly projectiles: Projectiles;
+  readonly trails = new SlashTrails();
+  readonly telegraphs: Telegraphs;
   readonly skills = new Skills();
   readonly adventure: Adventure;
   readonly map: MapView;
@@ -123,6 +127,9 @@ export class Game {
     this.scene.add(this.loot.group);
     this.projectiles = new Projectiles(this.world);
     this.scene.add(this.projectiles.group);
+    this.scene.add(this.trails.group);
+    this.telegraphs = new Telegraphs(this.world);
+    this.scene.add(this.telegraphs.group);
     this.enemies.hooks = {
       shoot: (e, kind, from, vel) =>
         this.projectiles.spawn({ kind, from, vel, owner: e, damage: e.damage, crit: false, poise: e.stats.poiseDamage, knockback: e.stats.knockback, life: 2 }),
@@ -406,6 +413,8 @@ export class Game {
   chooseClass(cls: ClassId): void {
     this.player.setClass(cls);
     this.skills.reset();
+    this.trails.reset();
+    this.telegraphs.reset();
     this.lockOn.target = null;
   }
 
@@ -485,7 +494,9 @@ export class Game {
     if (target) this.lockOn.flick(look.dx, this.player, this.enemies.list);
     this.cam.update(this.player.pos, look, dt, target ? target.centre() : null, this.player.aiming);
     this.model.update(this.player, dt);
+    this.trails.update(this.model.getSwingSample(this.player), dt);
     this.enemies.updateModels(dt, this.player.pos);
+    this.telegraphs.update(this.enemies.list, this.player.pos);
     this.loot.animate(performance.now() / 1000);
     this.adventure.render(performance.now() / 1000);
     this.map.update();

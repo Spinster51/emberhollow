@@ -3239,6 +3239,217 @@ check('phase 2 adds orb volleys or the fire nova', /volley|nova/.test(s.moves2) 
 check('boss loot: epic/legendary gear and a Warden Ember; quest done', s.rare >= 1 && s.ember && s.quest, JSON.stringify(s));
 check('adds vanish after death; the exit opens behind the boss', s.addsGone === 0 && s.exit === 'Leave the vault' && s.outside, JSON.stringify(s));
 
+// 4x2. Option C reach re-tune, slash trails, ground telegraphs, and shield bash fix.
+s = await run2(async () => {
+  const g = window.game;
+  const A = window.art;
+  const d = g.adventure.dungeon;
+  const p = g.player;
+  const out = {};
+  const V = p.pos.constructor;
+
+  // 1. Bandit hits at 1.6 m and no longer at 2.0 m.
+  const testBandit = (dist) => {
+    const e = window.arena2('bandit', dist, false);
+    p.hp = p.stats.maxHp;
+    e.state = 'windup';
+    e.stateTime = 0;
+    e.vel.set(0, 0, 0);
+    for (let i = 0; i < 60 && e.state !== 'recover'; i++) g.step(1);
+    const hit = p.hp < p.stats.maxHp;
+    e.frozen = true;
+    return hit;
+  };
+  out.bandit16 = testBandit(1.6);
+  out.bandit20 = testBandit(2.0);
+
+  // 2. Warden sweep reaches 3.5 m and no further.
+  const b = d.boss;
+  const testSweep = (dist) => {
+    window.arena2('bandit', 30);
+    d.load(null);
+    b.reset();
+    b.frozen = false;
+    b.facing = Math.PI;
+    b.move = 'sweep';
+    b.state = 'windup';
+    b.stateTime = 0;
+    p.pos.set(b.pos.x, b.pos.y, b.pos.z + dist);
+    p.vel.set(0, 0, 0);
+    p.hp = p.stats.maxHp;
+    for (let i = 0; i < 80 && b.state !== 'recover'; i++) g.step(1);
+    const hit = p.hp < p.stats.maxHp;
+    b.reset();
+    b.frozen = true;
+    return hit;
+  };
+  out.sweep34 = testSweep(3.4);
+  out.sweep36 = testSweep(3.6);
+  g.adventure.leaveDungeon();
+
+  // 3. Spider collider is 0.90 m (stats + physical separation).
+  const sp = window.arena2('spider', 0.95, true);
+  g.step(1);
+  out.spider = { radius: sp.stats.radius, sep: +sp.pos.distanceTo(p.pos).toFixed(3) };
+
+  // 4. Goblin arrows spawn at 0.65 m above feet.
+  const gob = window.arena2('goblin', 10, false);
+  let arrowY = null;
+  for (let i = 0; i < 120; i++) {
+    p.hp = p.stats.maxHp;
+    const before = g.projectiles.list.length;
+    g.step(1);
+    if (g.projectiles.list.length > before) {
+      const pr = g.projectiles.list[g.projectiles.list.length - 1];
+      if (pr.kind === 'arrow') { arrowY = +(pr.pos.y - gob.pos.y).toFixed(3); break; }
+    }
+  }
+  out.goblinY = arrowY;
+
+  // 5. Warrior hits at 2.1 m (surface gap; 2.5 m centre) and no longer at 2.3 m (2.7 m centre).
+  const testWarrior = (gap) => {
+    const e = window.arena2('bandit', gap + 0.4, true);
+    g.chooseClass('warrior');
+    p.pos.set(0, g.world.groundAt(0, 32, 1e9), 32);
+    p.facing = 0;
+    p.stamina = 999;
+    const hp0 = e.hp;
+    g.step(1, { held: ['attack'] });
+    for (let i = 0; i < 30 && p.state === 'attack'; i++) {
+      // Keep exact surface gap right up to the strike frame so lunge doesn't skew the boundary test.
+      e.pos.set(p.pos.x, e.pos.y, p.pos.z - (gap + e.stats.radius));
+      g.step(1);
+      if (e.hp < hp0) break;
+    }
+    return e.hp < hp0;
+  };
+  out.warrior21 = testWarrior(2.1);
+  out.warrior23 = testWarrior(2.3);
+
+  // 6. Slash trail appears during a swing and is gone afterwards.
+  window.arena2('bandit', 30);
+  g.chooseClass('warrior');
+  g.trails.reset();
+  g.step(0, null, true);
+  await A.modelsSettled();
+  for (let i = 0; i < 5; i++) g.step(1, null, true);
+  g.step(1, { held: ['attack'] }, true);
+  let trailDuring = 0;
+  let trailVerts = 0;
+  let trailArc = 0;
+  for (let i = 0; i < 30 && p.state === 'attack'; i++) {
+    g.step(1, null, true);
+    if (p.attackPhase() === 'swing' && g.trails.activeCount > 0) {
+      trailDuring = Math.max(trailDuring, g.trails.activeCount);
+      const sl = g.trails.slots.find((x) => x.mesh.visible);
+      if (sl) {
+        trailVerts = Math.max(trailVerts, sl.count);
+        let arc = 0;
+        for (let k = 1; k < sl.count; k++) arc += sl.tips[k].distanceTo(sl.tips[k - 1]);
+        trailArc = Math.max(trailArc, arc);
+      }
+    }
+  }
+  for (let i = 0; i < 20; i++) g.step(1, null, true);
+  out.trail = { during: trailDuring, verts: trailVerts, arc: +trailArc.toFixed(2), after: g.trails.activeCount };
+
+  // 7. Each telegraph appears during its windup with the right size and is gone after the hit.
+  out.tele = {};
+  const snapTele = () => {
+    const sl = g.telegraphs.slots.find((x) => x.visible);
+    return sl ? { kind: sl.kind, r: sl.radius, arc: sl.arcDeg, progress: +sl.progress.toFixed(2) } : null;
+  };
+  {
+    const go = window.arena2('golem', 6, false);
+    go.state = 'windup';
+    go.stateTime = 0.5;
+    g.step(0, null, true);
+    const s50 = snapTele();
+    go.stateTime = 0.95;
+    g.step(0, null, true);
+    const s95 = snapTele();
+    go.state = 'active';
+    go.stateTime = 0.05;
+    go.update(1 / 60, p);
+    g.step(0, null, true);
+    out.tele.golem = {
+      kind: s50?.kind, r: s50?.r, arc: s50?.arc,
+      p50: s50?.progress ?? 0, p95: s95?.progress ?? 0,
+      after: g.telegraphs.activeCount,
+    };
+    go.frozen = true;
+  }
+  d.load(null);
+  b.reset();
+  b.frozen = true;
+  p.pos.set(b.pos.x, b.pos.y, b.pos.z + 6);
+  for (const [mv, wantR, wantArc] of [['sweep', 3.5, 140], ['slam', 4.8, 360], ['nova', 9.0, 360]]) {
+    b.phase = mv === 'nova' ? 2 : 1;
+    b.move = mv;
+    b.state = 'windup';
+    b.stateTime = 0.45;
+    g.step(0, null, true);
+    const s = snapTele();
+    b.state = 'active';
+    b.hitDone = true;
+    g.step(0, null, true);
+    out.tele[mv] = { kind: s?.kind, r: s?.r, wantR, arc: s?.arc, wantArc, after: g.telegraphs.activeCount };
+  }
+  b.reset();
+  g.adventure.leaveDungeon();
+
+  // 8. Shield bash moves the shield at least 0.5 m forward at the hit moment.
+  window.arena2('bandit', 30);
+  g.chooseClass('tank');
+  window.levelTo(6);
+  p.mana = p.stats.maxMana;
+  g.step(0, null, true);
+  await A.modelsSettled();
+  for (let i = 0; i < 15; i++) g.step(1, null, true);
+  const fVec = p.facingVector();
+  const shieldFwd = () => {
+    g.scene.updateMatrixWorld(true);
+    let maxFwd = -1e9;
+    const v = new V();
+    g.model.shield.traverse((o) => {
+      if (!o.isMesh || o.name.endsWith('_outline') || !o.geometry?.attributes?.position) return;
+      const pos = o.geometry.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+        maxFwd = Math.max(maxFwd, (v.x - p.pos.x) * fVec.x + (v.z - p.pos.z) * fVec.z);
+      }
+    });
+    return maxFwd;
+  };
+  const restFwd = shieldFwd();
+  g.skills.cast(2, g.skillContext());
+  for (let i = 0; i < 30 && p.state === 'skill'; i++) {
+    if (p.stateTime >= 0.2 - 1e-6) break;
+    g.step(1, null, true);
+  }
+  g.step(0, null, true);
+  const hitFwd = shieldFwd();
+  out.bash = { rest: +restFwd.toFixed(3), hit: +hitFwd.toFixed(3), delta: +(hitFwd - restFwd).toFixed(3) };
+
+  // Clean up back to town.
+  for (const e of g.enemies.list) { e.home.copy(window.homes.get(e)); e.reset(); e.frozen = true; }
+  g.chooseClass('warrior');
+  p.respawn();
+  window.tp(0, 32);
+  return out;
+});
+check('reach: bandit hits at 1.6 m and no longer at 2.0 m', s.bandit16 === true && s.bandit20 === false, JSON.stringify({ b16: s.bandit16, b20: s.bandit20 }));
+check('reach: Warden sweep reaches 3.5 m and no further', s.sweep34 === true && s.sweep36 === false, JSON.stringify({ s34: s.sweep34, s36: s.sweep36 }));
+check('reach: spider collider radius is 0.90 m', s.spider.radius === 0.9 && s.spider.sep >= 1.24, JSON.stringify(s.spider));
+check('reach: goblin arrows spawn at 0.65 m', Math.abs((s.goblinY ?? 0) - 0.65) < 0.05, `y=${s.goblinY}`);
+check('reach: Warrior hits at 2.1 m and no longer at 2.3 m', s.warrior21 === true && s.warrior23 === false, JSON.stringify({ w21: s.warrior21, w23: s.warrior23 }));
+check('vfx: slash trail appears during a swing with a visible arc and is gone afterwards', s.trail.during >= 1 && s.trail.verts >= 6 && s.trail.arc >= 1.0 && s.trail.after === 0, JSON.stringify(s.trail));
+check('vfx: each telegraph appears during windup with exact TUNING size and is gone after the hit',
+  s.tele.golem.kind === 'golem:slam' && s.tele.golem.r === 3.2 && s.tele.golem.arc === 360 && s.tele.golem.p95 > s.tele.golem.p50 && s.tele.golem.after === 0 &&
+  ['sweep', 'slam', 'nova'].every((k) => s.tele[k].kind === `warden:${k}` && s.tele[k].r === s.tele[k].wantR && s.tele[k].arc === s.tele[k].wantArc && s.tele[k].after === 0),
+  JSON.stringify(s.tele));
+check('shield bash: moves the shield at least 0.5 m forward at the hit moment', s.bash.hit >= 0.8 && s.bash.delta >= 0.5, JSON.stringify(s.bash));
+
 // 4y. Ember Vault 3D art pass: models, fallback on missing file, colliders, mechanism model states, boss portal.
 s = await run2(async () => {
   const g = window.game;

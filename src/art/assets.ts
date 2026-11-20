@@ -78,7 +78,7 @@ export const ATTACK_CLIPS: Partial<Record<Look, SwingClip[]>> & { default: Swing
 export const SKILL_CLIPS: Record<string, { clip: string; loop?: boolean; speed?: number }> = {
   whirlwind: { clip: '2H_Melee_Attack_Spin', loop: true, speed: 1.6 },
   charge: { clip: 'Running_A', loop: true, speed: 1.6 },
-  shieldBash: { clip: '1H_Melee_Attack_Stab' },
+  shieldBash: { clip: 'Blocking' },
   earthsplitter: { clip: '2H_Melee_Attack_Chop' },
   eviscerate: { clip: 'Dualwield_Melee_Attack_Stab' },
   riposte: { clip: '1H_Melee_Attack_Stab' },

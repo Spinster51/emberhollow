@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { TUNING } from '../config';
 import { SKILLS, type SkillDef } from './classes';
 import { inArc, type CombatFx } from '../combat/combat';
 import type { Enemies } from '../combat/Enemies';
@@ -32,6 +33,8 @@ interface Running {
   dir: THREE.Vector3;
   hit: Set<Enemy>;
 }
+
+const SK = TUNING.combat.skills;
 
 /**
  * Skills on keys 1–4. Each class has four (classes.ts); they unlock with level, cost mana,
@@ -132,7 +135,7 @@ export class Skills {
   private shadowTarget(ctx: SkillContext): Enemy | null {
     if (ctx.target?.alive) return ctx.target;
     let best: Enemy | null = null;
-    let bestD = 12;
+    let bestD = SK.shadowstepRange;
     for (const e of ctx.enemies.list) {
       if (!e.alive) continue;
       const d = e.pos.distanceTo(ctx.player.pos);
@@ -157,7 +160,7 @@ export class Skills {
       // ------------------------------------------------ warrior
       case 'charge': {
         p.vel.set(r.dir.x * 18, 0, r.dir.z * 18);
-        for (const e of ctx.enemies.near(p.pos, 1.4)) {
+        for (const e of ctx.enemies.near(p.pos, SK.chargeReach)) {
           if (r.hit.has(e)) continue;
           r.hit.add(e);
           this.hit(ctx, e, 1.5 * b, 25, 6);
@@ -169,14 +172,14 @@ export class Skills {
       case 'whirlwind':
         for (const time of [0.1, 0.35, 0.6]) {
           if (!this.at(time)) continue;
-          for (const e of ctx.enemies.near(p.pos, 3)) this.hit(ctx, e, 0.7 * b, 8, 2);
-          ctx.projectiles.blast(p.pos.clone().setY(p.pos.y + 0.9), 3, 0xd8e2ff);
+          for (const e of ctx.enemies.near(p.pos, SK.whirlwindReach)) this.hit(ctx, e, 0.7 * b, 8, 2);
+          ctx.projectiles.blast(p.pos.clone().setY(p.pos.y + 0.9), SK.whirlwindReach, 0xd8e2ff);
         }
         break;
       case 'warCry':
         if (this.at(0.15)) {
           p.damageBuffTime = 8 + 2 * p.prog.rank(def.id);
-          for (const e of ctx.enemies.near(p.pos, 10)) e.taunt(3);
+          for (const e of ctx.enemies.near(p.pos, SK.warCryRadius)) e.taunt(3);
           ctx.projectiles.blast(p.pos.clone().setY(p.pos.y + 1), 4, 0xff5a3a);
           ctx.shake(0.2);
         }
@@ -189,7 +192,7 @@ export class Skills {
             const d = e.pos.clone().sub(p.pos);
             const along = d.dot(f);
             const side = Math.abs(d.x * f.z - d.z * f.x);
-            if (along > 0 && along < 7 && side < 1.2 + e.stats.radius && Math.abs(d.y) < 2.5) this.hit(ctx, e, 3 * b, 60, 8);
+            if (along > 0 && along < SK.earthsplitterLength && side < SK.earthsplitterHalfWidth + e.stats.radius && Math.abs(d.y) < 2.5) this.hit(ctx, e, 3 * b, 60, 8);
           }
           for (let i = 1; i <= 6; i++) ctx.projectiles.blast(p.pos.clone().addScaledVector(f, i * 1.1).setY(p.pos.y + 0.3), 0.9, 0xb08a5a);
           ctx.shake(0.5);
@@ -201,7 +204,7 @@ export class Skills {
       case 'riposte':
         if (this.at(0.2)) {
           const mult = (2 + (3 * p.counter) / 100) * b;
-          for (const e of this.inFront(ctx, 2.6, 140)) this.hit(ctx, e, mult, 50, 6);
+          for (const e of this.inFront(ctx, SK.riposteReach, SK.riposteArc)) this.hit(ctx, e, mult, 50, 6);
           p.counter = 0;
           ctx.shake(0.35);
           ctx.hitStop(6);
@@ -210,16 +213,16 @@ export class Skills {
       case 'taunt':
         if (this.at(0.2)) {
           const time = 5 + p.prog.rank(def.id);
-          for (const e of ctx.enemies.near(p.pos, 10)) {
+          for (const e of ctx.enemies.near(p.pos, SK.tauntRadius)) {
             e.taunt(time);
             e.slow(0.6, time);
           }
-          ctx.projectiles.blast(p.pos.clone().setY(p.pos.y + 1), 10, 0xffc04a);
+          ctx.projectiles.blast(p.pos.clone().setY(p.pos.y + 1), SK.tauntRadius, 0xffc04a);
         }
         break;
       case 'shieldBash':
         if (this.at(0.2)) {
-          for (const e of this.inFront(ctx, 2.2, 100)) {
+          for (const e of this.inFront(ctx, SK.shieldBashReach, SK.shieldBashArc)) {
             this.hit(ctx, e, 1.2 * b, 45, 5);
             e.freeze(0.75);
           }
@@ -247,12 +250,12 @@ export class Skills {
       case 'frostNova':
         if (this.at(0.2)) {
           const time = 2 + 0.4 * p.prog.rank(def.id);
-          for (const e of ctx.enemies.near(p.pos, 5)) {
+          for (const e of ctx.enemies.near(p.pos, SK.frostNovaRadius)) {
             this.hit(ctx, e, 0.8, 0, 0);
             e.freeze(time, 'dazed');
             e.slow(0.5, time + 2);
           }
-          ctx.projectiles.blast(p.pos.clone().setY(p.pos.y + 0.6), 5, 0x9fe8ff);
+          ctx.projectiles.blast(p.pos.clone().setY(p.pos.y + 0.6), SK.frostNovaRadius, 0x9fe8ff);
         }
         break;
       case 'blink':
@@ -291,7 +294,7 @@ export class Skills {
           const e = this.shadowTarget(ctx);
           if (e) {
             ctx.projectiles.blast(p.pos.clone().setY(p.pos.y + 1), 0.7, 0x332244);
-            p.teleport(e.pos.clone().addScaledVector(e.facingVector(), -(1.1 + e.stats.radius)));
+            p.teleport(e.pos.clone().addScaledVector(e.facingVector(), -(SK.shadowstepBehind + e.stats.radius)));
             p.faceTowards(e.pos);
             ctx.faceCamera();
             p.nextCrit = true;
@@ -320,7 +323,7 @@ export class Skills {
         break;
       case 'eviscerate':
         if (this.at(0.3)) {
-          const targets = this.inFront(ctx, 2.3, 100);
+          const targets = this.inFront(ctx, SK.eviscerateReach, SK.eviscerateArc);
           targets.sort((a, c) => a.pos.distanceTo(p.pos) - c.pos.distanceTo(p.pos));
           const e = targets[0];
           if (e) {

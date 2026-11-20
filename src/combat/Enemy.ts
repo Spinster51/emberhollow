@@ -20,6 +20,8 @@ export const BOSS_MOVES: Record<BossMove, { windup: number; active: number; reco
 export const PHASE_ROAR = 1.6;
 
 const C = TUNING.combat;
+const E = TUNING.enemies;
+const B = E.boss;
 const STEP_UP = 0.5;
 
 /** What an enemy can ask the world for: projectiles and area effects. */
@@ -61,7 +63,7 @@ export class Enemy {
   staggerKind: StaggerKind | null = null;
   private staggerTime = 0;
   private cooldown = 0;
-  private hitDone = false;
+  hitDone = false;
   /** Strike number within the bandit's 2-hit combo. */
   comboStep = 0;
   private wander = new THREE.Vector3();
@@ -248,11 +250,11 @@ export class Enemy {
           const radial = toPlayer.clone().normalize().multiplyScalar(dist > keep + 3 ? 1 : dist < keep - 3 ? -1 : 0);
           this.steer(side.add(radial), s.speed * (dist < keep - 3 ? 0.9 : 0.6), dt, 0);
           this.turnTo(toPlayer, 10, dt);
-        } else if (s.style === 'melee' && dist < s.range + 1.5 && this.cooldown > 0) {
+        } else if (s.style === 'melee' && dist < s.range + E.meleeCircleRange && this.cooldown > 0) {
           // Circle the player while waiting for the next attack.
           if (this.rand() < dt * 0.4) this.circleDir *= -1;
           const side = new THREE.Vector3(-toPlayer.z, 0, toPlayer.x).normalize().multiplyScalar(this.circleDir);
-          const keep = toPlayer.clone().normalize().multiplyScalar(dist - (s.range + 0.5));
+          const keep = toPlayer.clone().normalize().multiplyScalar(dist - (s.range + E.meleeCircleKeep));
           this.steer(side.add(keep), s.speed * 0.5, dt, 0);
           this.turnTo(toPlayer, 10, dt);
         } else {
@@ -300,7 +302,7 @@ export class Enemy {
           break;
         }
         if (this.stateTime >= s.recover) {
-          if (s.combo && this.comboStep === 0 && dist < s.range + 0.8) {
+          if (s.combo && this.comboStep === 0 && dist < s.range + E.meleeComboRange) {
             this.comboStep = 1;
             this.setState('windup');
           } else {
@@ -344,15 +346,15 @@ export class Enemy {
     if (this.cooldown <= 0) {
       let m: BossMove | null = null;
       const r = this.rand();
-      if (dist <= 4.6) m = this.phase === 2 && r < 0.25 ? 'nova' : r < 0.6 ? 'sweep' : 'slam';
-      else if (dist > 8 && dist < 22) m = this.phase === 2 && r < 0.5 ? 'volley' : 'charge';
+      if (dist <= B.closeRange) m = this.phase === 2 && r < 0.25 ? 'nova' : r < 0.6 ? 'sweep' : 'slam';
+      else if (dist > B.longRangeMin && dist < B.longRangeMax) m = this.phase === 2 && r < 0.5 ? 'volley' : 'charge';
       if (m) {
         this.move = m;
         this.setState('windup');
         return;
       }
     }
-    if (dist > 3.5) this.steer(toPlayer, s.speed * this.rage(), dt, 6);
+    if (dist > B.stopDistance) this.steer(toPlayer, s.speed * this.rage(), dt, 6);
     else {
       this.brake(dt);
       this.turnTo(toPlayer, 6, dt);
@@ -362,11 +364,11 @@ export class Enemy {
   private updateBoss(dt: number, player: Player, dist: number): void {
     const s = this.stats;
     const move = this.move!;
-    const near = Math.abs(player.pos.y - this.pos.y) < 2.5;
+    const near = Math.abs(player.pos.y - this.pos.y) < B.hitY;
     if (move === 'charge') {
       this.vel.copy(this.chargeDir).multiplyScalar(s.lunge * this.speedMult());
       const blocked = this.walk(dt);
-      if (!this.hitDone && dist < s.radius + 0.9 && near) {
+      if (!this.hitDone && dist < s.radius + B.chargeMargin && near) {
         this.hitDone = true;
         this.hitPlayer(player);
       }
@@ -384,17 +386,17 @@ export class Enemy {
         this.hitDone = true;
         const at = this.pos.clone().setY(this.pos.y + 0.3);
         if (move === 'sweep') {
-          if (near && inArc(this.pos, this.facingVector(), player.pos, s.range + 0.4, 170)) this.hitPlayer(player);
+          if (near && inArc(this.pos, this.facingVector(), player.pos, B.sweepReach, B.sweepArc)) this.hitPlayer(player);
         } else if (move === 'slam' || move === 'nova') {
-          const r = move === 'nova' ? 9 : (s.aoe ?? 5);
+          const r = move === 'nova' ? B.novaRadius : (s.aoe ?? 4.8);
           this.hooks?.blast(at, r, move === 'nova' ? 0xff6a2a : 0x9a8a70);
-          if (near && dist < r + 0.35) this.hitPlayer(player);
+          if (near && dist < r + TUNING.radius) this.hitPlayer(player);
         } else if (move === 'volley') {
-          const from = this.pos.clone().setY(this.pos.y + s.centreY + 0.6);
+          const from = this.pos.clone().setY(this.pos.y + (s.projectileY ?? B.volleyY));
           const aim = player.pos.clone().setY(player.pos.y + 1).sub(from).normalize();
           const speed = s.projectileSpeed ?? 14;
           for (let i = -2; i <= 2; i++) {
-            const v = aim.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), i * 0.22).multiplyScalar(speed);
+            const v = aim.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), i * B.volleySpread).multiplyScalar(speed);
             this.hooks?.shoot(this, 'orb', from.clone(), v);
           }
         }
@@ -409,19 +411,19 @@ export class Enemy {
       this.updateBoss(dt, player, dist);
       return;
     }
-    const touch = s.radius + 0.35 + 0.35;
+    const touch = s.radius + TUNING.radius + E.lungeMargin;
     if (s.style === 'melee') {
       this.brake(dt);
       if (!this.hitDone && this.stateTime >= s.active * 0.5) {
         this.hitDone = true;
-        if (inArc(this.pos, this.facingVector(), player.pos, s.range + 0.3, 110)) this.hitPlayer(player);
+        if (inArc(this.pos, this.facingVector(), player.pos, s.range + E.meleeMargin, E.meleeArc)) this.hitPlayer(player);
       }
     } else if (s.style === 'ranged') {
       this.brake(dt);
       if (!this.hitDone) {
         this.hitDone = true;
         // Lead the target a little.
-        const from = this.pos.clone().setY(this.pos.y + s.centreY + 0.2).addScaledVector(this.facingVector(), 0.5);
+        const from = this.pos.clone().setY(this.pos.y + (s.projectileY ?? s.centreY + E.projectileYOffset)).addScaledVector(this.facingVector(), E.projectileFwd);
         const speed = s.projectileSpeed ?? 20;
         const t = Math.min(1, from.distanceTo(player.pos) / speed);
         const aim = player.pos.clone().addScaledVector(player.vel.clone().setY(0), t * 0.6).setY(player.pos.y + 1.0);
@@ -433,7 +435,7 @@ export class Enemy {
         this.hitDone = true;
         const r = s.aoe ?? 3;
         this.hooks?.blast(this.pos.clone().setY(this.pos.y + 0.3), r, 0x9a8a70);
-        if (dist < r + 0.35 && Math.abs(player.pos.y - this.pos.y) < 2) this.hitPlayer(player);
+        if (dist < r + TUNING.radius && Math.abs(player.pos.y - this.pos.y) < E.slamY) this.hitPlayer(player);
       }
     } else {
       // Lunge / charge: keep going in a straight line, hurt on contact.

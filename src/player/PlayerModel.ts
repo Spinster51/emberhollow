@@ -9,6 +9,7 @@ import { cloneModel, cloneNode, loadModel, modelClips, modelState } from '../cor
 import { Rig } from '../core/rig';
 import { ATTACK_CLIPS, HEAD_ART, HUMANOID, SKILL_CLIPS, WORLD_FILE, type SwingClip } from '../art/assets';
 import { loadWorldFile, worldNode } from '../world/worldModels';
+import type { SwingSample } from '../combat/SlashTrails';
 
 const AXIS_X = new THREE.Vector3(1, 0, 0);
 /** Height (m) of the point the rigged body flips around in a roll: the middle of the tucked body. */
@@ -49,6 +50,16 @@ const dir = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z).norm
  * way the elbow bends (out and down), and how long (s) raising or lowering the shield takes.
  */
 const RIG_GUARD = { hand: new THREE.Vector3(0.22, 0.81, 0.78), elbow: dir(1, -0.7, -0.2), raise: 0.1 };
+/** Shield bash target positions in rig space (+Z forward): cocked slightly back, then thrust far forward. */
+const RIG_BASH = {
+  start: new THREE.Vector3(0.24, 0.81, 0.58),
+  peak: new THREE.Vector3(0.06, 0.92, 1.52),
+  elbow: dir(1, -0.45, -0.2),
+};
+const _gTarget = new THREE.Vector3();
+const _invSword = new THREE.Matrix4();
+const _tipBox = new THREE.Box3();
+const _localPt = new THREE.Vector3();
 /** The shield holder's rotation on the hand slot when not guarding (as `mountRig` puts it). */
 const SHIELD_REST = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
 /**
@@ -166,6 +177,30 @@ export class PlayerModel {
   /** 0..1: how far a held shield has turned to its in-air hold; true while the holder is moved by it. */
   private airHold = 0;
   private airTurned = false;
+  /** Cached weapon blade extent in `sword` local space (-Z), and pre-swing sample for slash trails. */
+  private weaponTipZ = -0.9;
+  private weaponInnerZ = -0.3;
+  private weaponTipKey = '';
+  private swingKey = 0;
+  private lastComboIdx = -1;
+  private wasSwinging = false;
+  private hasPreSample = false;
+  private readonly preTip = new THREE.Vector3();
+  private readonly preInner = new THREE.Vector3();
+  private readonly curTip = new THREE.Vector3();
+  private readonly curInner = new THREE.Vector3();
+  private readonly swingSample: SwingSample = {
+    swingKey: 0,
+    active: false,
+    hasPre: false,
+    preTip: this.preTip,
+    preInner: this.preInner,
+    tip: this.curTip,
+    inner: this.curInner,
+    center: new THREE.Vector3(),
+    cls: 'warrior',
+    weapon: null,
+  };
 
   /** `bodies` can be swapped out by tests (e.g. a missing file to check the fallback). */
   /** `worldFile` holds the glider (tests pass a missing one to check the fallback). */
@@ -392,6 +427,81 @@ export class PlayerModel {
     }
     this.offDagger.clear();
     if (look === 'daggers' && eq.weapon && !eq.offhand) this.offDagger.add(buildItemMesh(eq.weapon));
+    this.weaponTipKey = '';
+  }
+
+  /** Cache the weapon's -Z tip and inner edge in `this.sword` local space (recomputed only on equip/load). */
+  private syncWeaponTip(p: Player): void {
+    const child = this.sword.children[0];
+    if (!child) return;
+    const key = `${p.inv.equipped.weapon?.uid ?? 0}:${child.userData.model ? 1 : 0}`;
+    if (key === this.weaponTipKey) return;
+    this.weaponTipKey = key;
+    this.sword.updateMatrixWorld(true);
+    _invSword.copy(this.sword.matrixWorld).invert();
+    _tipBox.makeEmpty();
+    child.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || m.name.endsWith('_outline') || !m.geometry) return;
+      if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+      if (!m.geometry.boundingBox) return;
+      // Transform the 8 corners of geometry boundingBox into `this.sword` space.
+      const bb = m.geometry.boundingBox;
+      for (let ix = 0; ix < 2; ix++) {
+        for (let iy = 0; iy < 2; iy++) {
+          for (let iz = 0; iz < 2; iz++) {
+            _localPt.set(ix ? bb.max.x : bb.min.x, iy ? bb.max.y : bb.min.y, iz ? bb.max.z : bb.min.z);
+            _localPt.applyMatrix4(m.matrixWorld).applyMatrix4(_invSword);
+            _tipBox.expandByPoint(_localPt);
+          }
+        }
+      }
+    });
+    if (!_tipBox.isEmpty()) {
+      this.weaponTipZ = Math.min(-0.55, _tipBox.min.z) - 0.16;
+      this.weaponInnerZ = this.weaponTipZ * 0.26;
+    }
+  }
+
+  /** World-space blade tip & inner edge sample for the pooled slash ribbon. */
+  getSwingSample(p: Player): SwingSample {
+    const step = p.state === 'attack' ? p.combo()[p.comboIndex] : null;
+    const isMelee = !!step && !step.projectile;
+    const phase = isMelee ? p.attackPhase() : null;
+    const swinging = isMelee && phase === 'swing';
+
+    if (swinging) {
+      if (!this.wasSwinging || p.comboIndex !== this.lastComboIdx) {
+        this.swingKey++;
+      }
+      this.wasSwinging = true;
+      this.lastComboIdx = p.comboIndex;
+    } else {
+      this.wasSwinging = false;
+    }
+
+    if (isMelee && (phase === 'windup' || phase === 'swing')) {
+      this.syncWeaponTip(p);
+      this.root.updateMatrixWorld(true);
+      this.curTip.set(0, 0, this.weaponTipZ).applyMatrix4(this.sword.matrixWorld);
+      this.curInner.set(0, 0, this.weaponInnerZ).applyMatrix4(this.sword.matrixWorld);
+      if (phase === 'windup') {
+        this.preTip.copy(this.curTip);
+        this.preInner.copy(this.curInner);
+        this.hasPreSample = true;
+      }
+    } else {
+      this.hasPreSample = false;
+    }
+
+    this.swingSample.swingKey = this.swingKey;
+    this.swingSample.active = swinging;
+    this.swingSample.hasPre = swinging && this.hasPreSample;
+    this.swingSample.center.copy(p.pos);
+    this.swingSample.cls = p.cls;
+    this.swingSample.weapon = p.inv.equipped.weapon;
+    if (swinging) this.hasPreSample = false;
+    return this.swingSample;
   }
 
   /**
@@ -560,6 +670,7 @@ export class PlayerModel {
           const k = Math.min(1, p.stateTime / Math.max(0.05, p.skill?.time ?? 0.5));
           rig.scrub(def.clip, k * rig.duration(def.clip), 0.06);
         }
+        if (p.skill?.id === 'shieldBash') after = () => this.poseShieldBash(rig, p);
         break;
       }
       case 'attack':
@@ -572,9 +683,10 @@ export class PlayerModel {
         if (entered) rig.play('Death_A', { loop: false, fade: 0.1 });
         break;
     }
+    const bashing = p.state === 'skill' && p.skill?.id === 'shieldBash';
     rig.update(dt);
     if (after) after();
-    this.poseGuard(rig, p, dt, !after);
+    if (!bashing) this.poseGuard(rig, p, dt, !after);
     this.poseAirShield(rig, p, dt);
   }
 
@@ -627,43 +739,73 @@ export class PlayerModel {
     if (shield && p.state === 'ground' && p.blocking) {
       this.guard = Math.max(Math.min(1, p.blockTime / RIG_GUARD.raise), Math.min(1, this.guard + step));
     } else this.guard = shield && free ? Math.max(0, this.guard - step) : 0;
-    const upper = rig.node('upperarm.l');
-    const lower = rig.node('lowerarm.l');
-    const hand = rig.node('hand.l');
-    const slot = this.shield.parent;
-    if (this.guard <= 0 || !upper || !lower || !hand || !slot) {
+    if (this.guard <= 0) {
       if (this.shieldTurned) this.shield.rotation.copy(this.offRest.rot);
       this.shieldTurned = false;
       return;
     }
     const k = this.guard * this.guard * (3 - 2 * this.guard);
+    this.poseLeftShieldArm(rig, RIG_GUARD.hand, RIG_GUARD.elbow, k, shield);
+  }
+
+  /**
+   * Tank's Shield Bash: lean into the strike and thrust the left arm and shield straight ahead,
+   * peaking at the hit moment (`t = 0.2 s` of `0.45 s`), then retracting smoothly.
+   */
+  private poseShieldBash(rig: Rig, p: Player): void {
+    const off = p.inv.equipped.offhand;
+    const look = off ? lookOf(off) : null;
+    const shield = look === 'woodShield' || look === 'ironShield';
+    const dur = Math.max(0.05, p.skill?.time ?? 0.45);
+    const t = Math.min(1, p.stateTime / dur);
+    const hitT = 0.2 / dur;
+    const k =
+      t < 0.14
+        ? -0.15 * (t / 0.14)
+        : t < hitT
+          ? -0.15 + 1.15 * Math.sin(((t - 0.14) / (hitT - 0.14)) * (Math.PI / 2))
+          : Math.cos(((t - hitT) / (1 - hitT)) * (Math.PI / 2));
+    const lean = Math.max(0, k);
+    rig.turn('spine', AXIS_X, 0.28 * lean);
+    rig.turn('chest', AXIS_X, 0.22 * lean);
+    rig.turn('upperarm.r', AXIS_X, 0.25 * lean);
+    _gTarget.copy(RIG_BASH.start).lerp(RIG_BASH.peak, k);
+    this.guard = 0;
+    this.poseLeftShieldArm(rig, _gTarget, RIG_BASH.elbow, 1, shield);
+  }
+
+  /** Two-bone IK for the left arm toward `target` in rig space, twisting the shield to face ahead. */
+  private poseLeftShieldArm(rig: Rig, target: THREE.Vector3, elbowDir: THREE.Vector3, weight: number, hasShield: boolean): void {
+    const upper = rig.node('upperarm.l');
+    const lower = rig.node('lowerarm.l');
+    const hand = rig.node('hand.l');
+    const slot = this.shield.parent;
+    if (!upper || !lower || !hand || !slot) return;
     const local = (o: THREE.Object3D, v: THREE.Vector3) => rig.root.worldToLocal(o.getWorldPosition(v));
-    // Two-bone reach: shoulder S, elbow on the circle where both bone lengths meet, hand at the target.
     const s = local(upper, _gS);
     const a = local(lower, _gE).distanceTo(s);
     const b = local(hand, _gH).distanceTo(_gE);
-    const toHand = _gU.copy(RIG_GUARD.hand).sub(s);
+    const toHand = _gU.copy(target).sub(s);
     const d = Math.min(toHand.length(), (a + b) * 0.999);
     toHand.normalize();
     const along = (a * a - b * b + d * d) / (2 * d);
     const out = Math.sqrt(Math.max(0, a * a - along * along));
-    _gW.copy(RIG_GUARD.elbow).addScaledVector(toHand, -RIG_GUARD.elbow.dot(toHand)).normalize();
+    _gW.copy(elbowDir).addScaledVector(toHand, -elbowDir.dot(toHand)).normalize();
     const elbow = _gE.copy(s).addScaledVector(toHand, along).addScaledVector(_gW, out);
     const fore = _gF.copy(s).addScaledVector(toHand, d).sub(elbow).normalize();
-    rig.aim('upperarm.l', 'lowerarm.l', _gU.copy(elbow).sub(s).normalize(), k);
-    rig.aim('lowerarm.l', 'hand.l', fore, k);
-    // Twist the forearm about itself so the slot's +Z (the way a held shield faces) turns forward.
+    rig.aim('upperarm.l', 'lowerarm.l', _gU.copy(elbow).sub(s).normalize(), weight);
+    rig.aim('lowerarm.l', 'hand.l', fore, weight);
+    if (!hasShield) return;
     const axis = local(hand, _gH).sub(local(lower, _gE)).normalize();
     rig.root.getWorldQuaternion(_gQ).invert();
     const face = _gS.set(0, 0, 1).applyQuaternion(slot.getWorldQuaternion(_gQ2)).applyQuaternion(_gQ);
     face.addScaledVector(axis, -face.dot(axis));
     const ahead = _gW.set(0, 0, 1).addScaledVector(axis, -axis.z);
     const twist = Math.atan2(_gU.crossVectors(face, ahead).dot(axis), face.dot(ahead));
-    rig.turn('lowerarm.l', axis, twist * k);
-    // Whatever twist is left: holder = slot⁻¹ · (rig root turned half round: -Z ahead, +Y up).
+    rig.turn('lowerarm.l', axis, twist * weight);
     slot.getWorldQuaternion(_gQ2).invert();
     rig.root.getWorldQuaternion(_gQ).multiply(SHIELD_REST);
-    this.shield.quaternion.copy(SHIELD_REST).slerp(_gQ2.multiply(_gQ), k);
+    this.shield.quaternion.copy(SHIELD_REST).slerp(_gQ2.multiply(_gQ), weight);
     this.shieldTurned = true;
   }
 

@@ -2,6 +2,7 @@
 // Numbers are first guesses for play-testing (docs/DESIGN.md §8–9, §11).
 
 import type { StatKey } from '../items/items';
+import { TUNING } from '../config';
 
 export type ClassId = 'warrior' | 'tank' | 'mage' | 'assassin';
 export const CLASS_IDS: ClassId[] = ['warrior', 'tank', 'mage', 'assassin'];
@@ -59,12 +60,18 @@ const melee = (w: number, s: number, r: number, mult: number, poise: number, sta
   windup: w, swing: s, recover: r, hitAt: 0.5, mult, poise, stamina, lunge, knockback,
 });
 
+const MC = TUNING.combat.classes;
+
 export const CLASSES: Record<ClassId, ClassDef> = {
   warrior: {
     id: 'warrior', name: 'Warrior', weapon: 'Sword / greatsword', colour: 0x3f6fb5,
     blurb: 'Balanced melee. Fast sword combos, a charge and a ground-splitting slam. The easiest class.',
     hp: 100, mana: 50, manaRegen: 4, bonus: {}, critMult: 1.5, backstab: 0, damageAttr: 'str', secondary: 'block',
-    combo: [melee(0.15, 0.15, 0.3, 1.0, 10, 6), melee(0.12, 0.15, 0.3, 1.15, 12, 6), melee(0.25, 0.2, 0.45, 1.8, 25, 10, 5, 6)],
+    combo: [
+      melee(0.15, 0.15, 0.3, 1.0, 10, 6),
+      melee(0.12, 0.15, 0.3, 1.15, 12, 6),
+      { ...melee(0.25, 0.2, 0.45, 1.8, 25, 10, 5, 6), arc: MC.warrior.step3Arc },
+    ],
     start: ['rustySword'],
     skills: ['charge', 'whirlwind', 'warCry', 'earthsplitter'],
     passives: ['wToughness', 'wBrutality', 'wEndurance', 'wMomentum'],
@@ -74,8 +81,8 @@ export const CLASSES: Record<ClassId, ClassDef> = {
     blurb: 'Block and parry to build a counter meter, then hit back hard. Taunts and slows enemies. Built to be fun solo.',
     hp: 130, mana: 40, manaRegen: 4, bonus: { armour: 10 }, critMult: 1.5, backstab: 0, damageAttr: 'str', secondary: 'block',
     combo: [
-      { ...melee(0.25, 0.2, 0.4, 1.0, 18, 8, 2, 4), reach: 2.2 },
-      { ...melee(0.3, 0.22, 0.5, 1.5, 30, 10, 3, 7), reach: 2.2 },
+      { ...melee(0.25, 0.2, 0.4, 1.0, 18, 8, 2, 4), reach: MC.tank.reach, arc: MC.tank.arc1 },
+      { ...melee(0.3, 0.22, 0.5, 1.5, 30, 10, 3, 7), reach: MC.tank.reach, arc: MC.tank.arc2 },
     ],
     start: ['rustyMace', 'woodShield'],
     skills: ['riposte', 'taunt', 'shieldBash', 'bulwark'],
@@ -98,10 +105,10 @@ export const CLASSES: Record<ClassId, ClassDef> = {
     blurb: 'Fast dagger flurries, lots of dodging, bonus damage from behind, a short stealth and big crits.',
     hp: 85, mana: 60, manaRegen: 5, bonus: { crit: 0.1 }, critMult: 1.75, backstab: 0.5, damageAttr: 'str', secondary: 'block',
     combo: [
-      { ...melee(0.08, 0.1, 0.2, 0.7, 5, 4, 3, 1), reach: 2.0 },
-      { ...melee(0.07, 0.1, 0.2, 0.7, 5, 4, 3, 1), reach: 2.0 },
-      { ...melee(0.07, 0.1, 0.2, 0.8, 6, 4, 3, 1), reach: 2.0 },
-      { ...melee(0.15, 0.15, 0.35, 1.4, 15, 6, 5, 4), reach: 2.0 },
+      { ...melee(0.08, 0.1, 0.2, 0.7, 5, 4, 3, 1), reach: MC.assassin.reach, arc: MC.assassin.arc },
+      { ...melee(0.07, 0.1, 0.2, 0.7, 5, 4, 3, 1), reach: MC.assassin.reach, arc: MC.assassin.arc },
+      { ...melee(0.07, 0.1, 0.2, 0.8, 6, 4, 3, 1), reach: MC.assassin.reach, arc: MC.assassin.arc },
+      { ...melee(0.15, 0.15, 0.35, 1.4, 15, 6, 5, 4), reach: MC.assassin.reach, arc: MC.assassin.arc },
     ],
     start: ['rustyDaggers'],
     skills: ['shadowstep', 'fanOfKnives', 'vanish', 'eviscerate'],
