@@ -3,6 +3,7 @@ import { addOutline, addSkinnedOutline, shellMaterial, toonMaterial } from '../c
 import { BOSS_MOVES, PHASE_ROAR, type Enemy } from './Enemy';
 import { cloneModel, loadModel, modelClips, modelState, shareSkeletons } from '../core/models';
 import { Rig } from '../core/rig';
+import { luma, paintMap, recolorMap } from '../core/paint';
 import { ENEMY_ART, HUMANOID, type Ears, type EnemyArt, type EnemyAttack, type PlantedHop, type Stride } from '../art/assets';
 
 /** Every file an enemy's art needs (body, clips, weapons, preloads). */
@@ -26,8 +27,6 @@ function usedClips(art: EnemyArt): Set<string> {
 
 /** Culling spheres per body file (model space, rest pose, padded for the clips' reach). */
 const cullSpheres = new Map<string, THREE.Sphere>();
-/** Repainted copies of textures (stone golem, goblin skin), made once per texture and recipe. */
-const paintedMaps = new Map<string, THREE.Texture>();
 /** The boss's phase-2 smoulder colour. */
 const EMBER = new THREE.Color(0xff5a1e);
 const WHITE = new THREE.Color(0xffffff);
@@ -45,8 +44,6 @@ const BACK_MAX = 2.2;
 const YAW_MAX = 0.87;
 /** Margin (radians) before the travel direction switches clip sets (forward, strafes, backwards). */
 const DIR_MARGIN = 0.2;
-/** KayKit palette atlases: 8 × 4 cells. */
-const ATLAS: [number, number] = [8, 4];
 const _box = new THREE.Box3();
 const _mbox = new THREE.Box3();
 const _v = new THREE.Vector3();
@@ -55,70 +52,11 @@ const frac = (x: number) => x - Math.floor(x);
 
 type MoveMode = 'fwd' | 'left' | 'right' | 'back' | 'flee';
 
-/** A copy of a texture repainted by `paint` (made once per recipe). Falls back to the original. */
-function paintMap(src: THREE.Texture, recipe: string, paint: (d: ImageData) => void): THREE.Texture {
-  const key = `${src.uuid}|${recipe}`;
-  let t = paintedMaps.get(key);
-  if (t) return t;
-  t = src;
-  const img = src.image as (CanvasImageSource & { width: number; height: number }) | undefined;
-  const cv = img?.width ? document.createElement('canvas') : null;
-  const ctx = cv?.getContext('2d', { willReadFrequently: true });
-  if (img && cv && ctx) {
-    cv.width = img.width;
-    cv.height = img.height;
-    ctx.drawImage(img, 0, 0);
-    const d = ctx.getImageData(0, 0, cv.width, cv.height);
-    paint(d);
-    ctx.putImageData(d, 0, 0);
-    const c = new THREE.CanvasTexture(cv);
-    c.flipY = src.flipY;
-    c.colorSpace = src.colorSpace;
-    c.magFilter = src.magFilter;
-    c.minFilter = src.minFilter;
-    c.wrapS = src.wrapS;
-    c.wrapT = src.wrapT;
-    c.name = `${src.name}_${recipe.length > 16 ? 'recolor' : recipe}`;
-    t = c;
-  }
-  paintedMaps.set(key, t);
-  return t;
-}
-
-const luma = (p: Uint8ClampedArray, i: number) => 0.3 * p[i] + 0.59 * p[i + 1] + 0.11 * p[i + 2];
-
 /** A texture's colours turned to grey (luma), for the stone golem. */
 const stoneMap = (src: THREE.Texture) =>
   paintMap(src, 'stone', (d) => {
     const p = d.data;
     for (let i = 0; i < p.length; i += 4) p[i] = p[i + 1] = p[i + 2] = luma(p, i);
-  });
-
-/**
- * Palette cells ("column,row" of the atlas) repainted in a colour; each pixel keeps its shade (its luma
- * against the cell's mean), so the cell's gradient survives. The goblin's skin on the bandit's texture.
- */
-const recolorMap = (src: THREE.Texture, cells: Record<string, number>) =>
-  paintMap(src, JSON.stringify(cells), (d) => {
-    const p = d.data;
-    const cw = d.width / ATLAS[0];
-    const ch = d.height / ATLAS[1];
-    for (const [cell, hex] of Object.entries(cells)) {
-      const [cx, cy] = cell.split(',').map(Number);
-      const x0 = Math.round(cx * cw), x1 = Math.round((cx + 1) * cw);
-      const y0 = Math.round(cy * ch), y1 = Math.round((cy + 1) * ch);
-      let sum = 0;
-      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) sum += luma(p, (y * d.width + x) * 4);
-      const mean = Math.max(1, sum / ((x1 - x0) * (y1 - y0)));
-      const rgb = [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255];
-      for (let y = y0; y < y1; y++) {
-        for (let x = x0; x < x1; x++) {
-          const i = (y * d.width + x) * 4;
-          const k = luma(p, i) / mean;
-          for (let c = 0; c < 3; c++) p[i + c] = rgb[c] * k;
-        }
-      }
-    }
   });
 
 /**

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { addSkinnedOutline, toonMaterial } from './toon';
 
 /**
@@ -79,6 +80,77 @@ export function shareSkeletons(root: THREE.Object3D): void {
     if (same) m.skeleton = same;
     else shared.push(k);
   });
+}
+
+/** Joined geometries per key (null: the parts could not be joined). */
+const joinedGeometry = new Map<string, THREE.BufferGeometry | null>();
+
+/** Can these geometries be merged: the same attributes (size, type, normalisation), all indexed, no morphs? */
+function joinable(geos: THREE.BufferGeometry[]): boolean {
+  const sig = (g: THREE.BufferGeometry) =>
+    `${g.index ? 'i' : 'n'}|${Object.keys(g.morphAttributes).length}|` +
+    Object.entries(g.attributes)
+      .map(([k, a]) => `${k}:${a.itemSize}:${(a as THREE.BufferAttribute).array?.constructor.name}:${a.normalized}`)
+      .sort()
+      .join(',');
+  const first = sig(geos[0]);
+  return geos.every((g) => sig(g) === first);
+}
+
+/**
+ * Join a clone's visible skinned parts into one SkinnedMesh per skeleton and material (call `shareSkeletons`
+ * first): one draw call, and one for its outline, instead of one each per body part (KayKit bodies come in
+ * six to eight parts). Parts must sit at their parent's origin with one bind matrix, as every pack body
+ * does; any that do not stay as they are. The joined geometry is built once per `key` (the file plus what
+ * was left out of it) and shared by every clone; the outline is grown `outline` model units, as loaded
+ * parts get theirs. Returns the joined meshes.
+ */
+export function joinSkinnedParts(root: THREE.Object3D, key: string, outline = 0.04): THREE.SkinnedMesh[] {
+  const groups = new Map<string, THREE.SkinnedMesh[]>();
+  const ids = new Map<object, number>();
+  const id = (o: object) => {
+    let i = ids.get(o);
+    if (i === undefined) ids.set(o, (i = ids.size));
+    return i;
+  };
+  root.traverse((o) => {
+    const m = o as THREE.SkinnedMesh;
+    if (!m.isSkinnedMesh || m.name.endsWith('_outline') || !m.visible || !m.parent) return;
+    const placed = m.position.lengthSq() < 1e-12 && Math.abs(m.quaternion.w) > 1 - 1e-9 && Math.abs(m.scale.x * m.scale.y * m.scale.z - 1) < 1e-6;
+    if (!placed || Array.isArray(m.material)) return;
+    const k = `${id(m.skeleton)}/${id(m.material)}/${id(m.parent)}`;
+    let g = groups.get(k);
+    if (!g) groups.set(k, (g = []));
+    g.push(m);
+  });
+  const out: THREE.SkinnedMesh[] = [];
+  let n = 0;
+  for (const parts of groups.values()) {
+    const first = parts[0];
+    if (parts.length < 2 || !parts.every((p) => p.bindMatrix.equals(first.bindMatrix))) continue;
+    const gk = `${key}#${n++}:${parts.map((p) => p.name).join(',')}`;
+    let geo = joinedGeometry.get(gk);
+    if (geo === undefined) {
+      const geos = parts.map((p) => p.geometry);
+      geo = joinable(geos) ? mergeGeometries(geos) : null;
+      if (geo) {
+        geo.computeBoundingBox();
+        geo.computeBoundingSphere();
+      }
+      joinedGeometry.set(gk, geo);
+    }
+    if (!geo) continue;
+    const mesh = new THREE.SkinnedMesh(geo, first.material);
+    mesh.name = `joined:${parts.length}`;
+    mesh.castShadow = true;
+    mesh.receiveShadow = false;
+    first.parent!.add(mesh);
+    mesh.bind(first.skeleton, first.bindMatrix);
+    if (outline > 0) addSkinnedOutline(mesh, outline);
+    for (const p of parts) p.removeFromParent();
+    out.push(mesh);
+  }
+  return out;
 }
 
 /**

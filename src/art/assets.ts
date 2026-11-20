@@ -512,3 +512,117 @@ export const FIXTURE_ART: Record<FixtureKind, string> = {
 
 /** Outline width (m) per node, default 0.03 as the procedural pieces; the rug lies flat and has none. */
 export const FURNITURE_OUTLINE: Record<string, number> = { Rug: 0 };
+
+// ---------------------------------------------------------------- town villagers (milestone 8)
+
+/** A prop from another file, held on a bone (hand slots). */
+export interface NpcProp {
+  file: string;
+  node: string;
+  bone: string;
+  /** Slot units. */
+  pos?: V3;
+  /** Euler XYZ; default half round about Y, as the pack holds its own props. */
+  rot?: V3;
+  /** Point the prop's +Y along this direction in the slot's frame instead (staffs). */
+  dir?: V3;
+  scale?: number;
+}
+
+/** A piece of furniture beside a villager that its idle works on (the carpenter's crate). */
+export interface NpcStation {
+  file: string;
+  node: string;
+  /** Metres from the villager in its resting frame: +x its right, -z ahead. */
+  at: [number, number];
+  /** Turn (radians) against the villager's resting facing. */
+  yaw: number;
+  scale: number;
+}
+
+export interface NpcArt {
+  body: string;
+  /** Files holding the clips (every KayKit body plays them). */
+  clips: string[];
+  /** Model units → metres. */
+  scale: number;
+  /** Nodes of the body left out (hats, a cape). */
+  hide?: string[];
+  /** The pack's own hand-slot props to keep; all others are left out. */
+  props?: string[];
+  held?: NpcProp[];
+  /** Palette cells to repaint, "column,row" → colour (see `EnemyArt.recolor`); the body's own file is untouched. */
+  recolor?: Record<string, number>;
+  /** The role idle, looped while not talking. */
+  idle: string;
+  /** In a conversation: `greet` once while turning to the player, then `idle` with a `gestures` clip every few seconds. */
+  talk: { greet: string; idle: string; gestures: string[] };
+  station?: NpcStation;
+}
+
+/** Character Animations 1.1 clips the villagers use (the KayKit Adventurers rig, trimmed); see CREDITS.md. */
+export const NPC_CLIPS = 'models/npcs/npc_clips.glb';
+/** Hand props for villagers: KayKit RPG Tools Bits (ledger, wrench, magnifying glass, mallet). */
+export const NPC_PROPS = 'models/npcs/npc_props.glb';
+const VILLAGER_CLIPS = [HUMANOID.clips, NPC_CLIPS];
+const TALK = { greet: 'Waving', idle: 'Idle', gestures: ['Interact'] };
+
+/**
+ * Town villagers by NPC id. KayKit bodies on the Adventurers rig: the Barbarian, Knight, Mage and Rogue bodies
+ * the player and the bandits already load, without their hats and repainted, and two from Adventurers 2.0 (the
+ * Ranger, the long-haired Mage). Atlas cells per body: Mage 0,1 robe, 1,0 hair, 2,1 cape, 4,0 cuffs and hem;
+ * Rogue 0,1 tunic, 1,0 hair, 1,1 cape and scarf; Knight 3,0 armour, 1,0 hair; Ranger 0,1 neckerchief and cape;
+ * Barbarian 1,0 beard and brows, 6,0 straps, 7,0 cape.
+ */
+export const NPC_ART: Record<string, NpcArt> = {
+  elder: {
+    body: 'models/npcs/mage_longhair.glb', clips: VILLAGER_CLIPS, scale: 0.72,
+    recolor: { '1,0': 0xdedad2, '0,1': 0xd9cfb6, '2,1': 0x7a2a3a, '4,0': 0xc9a040 },
+    idle: 'Idle_B', talk: TALK,
+  },
+  steward: {
+    body: 'models/enemies/bandit.glb', clips: VILLAGER_CLIPS, scale: 0.74,
+    recolor: { '0,1': 0x2f6a5a, '1,1': 0x34405e, '1,0': 0xd9b26a },
+    held: [{ file: NPC_PROPS, node: 'Ledger', bone: 'handslot.l' }],
+    idle: 'Holding_B', talk: TALK,
+  },
+  tinker: {
+    body: HUMANOID.clips, clips: VILLAGER_CLIPS, scale: 0.75,
+    hide: ['Knight_Helmet', 'Knight_Cape'],
+    recolor: { '3,0': 0xb58a4a, '1,0': 0x8a462e },
+    held: [{ file: NPC_PROPS, node: 'Wrench', bone: 'handslot.r' }],
+    idle: 'Working_A', talk: TALK,
+  },
+  hunter: {
+    body: 'models/npcs/ranger.glb', clips: VILLAGER_CLIPS, scale: 0.77,
+    recolor: { '0,1': 0x4d6a2f },
+    // The pack's longbow, stood upright in the left hand at his side (baked into the file's hand slot).
+    props: ['Bow'],
+    idle: 'Idle', talk: TALK,
+  },
+  scholar: {
+    body: HUMANOID.bodies.mage, clips: VILLAGER_CLIPS, scale: 0.73,
+    hide: ['Mage_Hat'],
+    recolor: { '0,1': 0x34467e, '1,0': 0x5c3a32, '2,1': 0x6b4a32 },
+    props: ['Spellbook_open'],
+    held: [{ file: NPC_PROPS, node: 'Magnifier', bone: 'handslot.r' }],
+    idle: 'Holding_B', talk: TALK,
+  },
+  carpenter: {
+    body: HUMANOID.bodies.warrior, clips: VILLAGER_CLIPS, scale: 0.8,
+    hide: ['Barbarian_Hat'],
+    recolor: { '1,0': 0x794e2a },
+    held: [{ file: NPC_PROPS, node: 'Mallet', bone: 'handslot.r', scale: 0.6 }],
+    idle: 'Hammering', talk: TALK,
+    station: { file: FURNITURE_FILE, node: 'Crate', at: [0.24, -0.6], yaw: 0.2, scale: 0.85 },
+  },
+};
+
+/** Villagers further than this (m) from the player hold their pose (their mixers do not run). */
+export const NPC_ANIM_RANGE = 40;
+/**
+ * Within this (m) of the player a villager draws its outline, casts its sun shadow and animates every frame.
+ * Further out it does neither (its 3 cm outline is under half a pixel wide there at the default pixel scale)
+ * and animates every other frame; 0.5 m of slack each way keeps it from flickering at the edge.
+ */
+export const NPC_DETAIL_RANGE = 20;

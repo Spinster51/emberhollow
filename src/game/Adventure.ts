@@ -188,7 +188,7 @@ export class Adventure {
     this.lastT = t;
     this.dungeon?.animate(t, dt);
     this.campfires.animate(t);
-    this.town.animate(t, this.game.player.pos);
+    this.town.animate(t, dt, this.game.player.pos);
   }
 
   interactables(): Interactable[] {

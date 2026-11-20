@@ -28,7 +28,8 @@ const MISSING_MODEL = 'models/chars/missing-test.glb';
 const MISSING_ENEMY = 'models/enemies/missing-test.glb';
 const MISSING_ITEM = 'models/items/missing-test.glb';
 const MISSING_FURNITURE = 'models/home/missing-test.glb';
-const MISSING = [MISSING_MODEL, MISSING_ENEMY, MISSING_ITEM, MISSING_FURNITURE];
+const MISSING_NPC = 'models/npcs/missing-test.glb';
+const MISSING = [MISSING_MODEL, MISSING_ENEMY, MISSING_ITEM, MISSING_FURNITURE, MISSING_NPC];
 const expectedError = (m) =>
   m.text().startsWith('Failed to load resource') && MISSING.some((f) => (m.location().url ?? '').endsWith(`/${f}`));
 page.on('pageerror', (e) => errors.push(String(e)));
@@ -1773,7 +1774,9 @@ if (shotsDir) {
 // ================================================================ world (milestone 5): main map
 const page2 = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 page2.on('pageerror', (e) => errors.push(String(e)));
-page2.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+page2.on('console', (m) => m.type() === 'error' && !expectedError(m) && errors.push(m.text()));
+// The villager fallback checks ask for a missing model file on this page too (a real host answers 404).
+await page2.route(`**/${MISSING_NPC}`, (r) => r.fulfill({ status: 404, body: 'not found' }));
 await page2.goto(`http://localhost:${PORT}/?test&world=main`);
 await page2.waitForFunction(() => window.game && window.items);
 const run2 = (fn, arg) => page2.evaluate(fn, arg);
@@ -2154,6 +2157,185 @@ check('enemies: a circling bandit plays a strafe clip and leans into it; it face
 check('enemies: the Cinder Warden\'s chase jogs near 1× in both phases; only its charge runs',
   [s.warden.p1, s.warden.p2].every((r) => r.clip === 'Running_B' && r.rate > 0.75 && r.rate < 1.3 && r.rate === r.want) && s.warden.charge.clip === 'Running_C' && s.warden.charge.rate < 2.5,
   JSON.stringify(s.warden));
+
+// 34e. Art: town villagers (milestone 8). Every villager shows its rigged KayKit body, repainted, hatless, its
+// parts joined into one mesh, feet on the ground, playing its role idle with its props; the files it shares with
+// the player and the bandits keep their own look. A missing file keeps the placeholder. In a conversation the
+// villager turns to the player and greets, gestures, then turns back to its idle; positions and prompts are as before.
+s = await run2(async (miss) => {
+  const g = window.game;
+  const A = window.art;
+  const a = g.adventure;
+  const town = a.town;
+  const p = g.player;
+  const V = p.pos.constructor;
+  const out = { npcs: {} };
+  window.tp(0, 32);
+  for (const n of town.npcs) n.model.update(1 / 60, p.pos, false, true);
+  await A.modelsSettled();
+  for (let i = 0; i < 30; i++) town.animate(i / 60, 1 / 60, p.pos);
+  const mapName = (m) => m?.material?.map?.name ?? '';
+  // Repainted maps are canvas copies of the file's texture (the file's own are images).
+  const painted = (m) => !!m?.material?.map?.isCanvasTexture;
+  for (const n of town.npcs) {
+    const m = n.model;
+    const art = A.NPC_ART[n.def.id];
+    const meshes = [];
+    m.rig?.root.traverse((o) => o.isMesh && !o.name.endsWith('_outline') && o.visible && meshes.push(o));
+    const skinned = meshes.filter((o) => o.isSkinnedMesh);
+    m.root.updateMatrixWorld(true);
+    let lo = 1e9, hi = -1e9;
+    for (const o of skinned) {
+      for (let i = 0; i < o.geometry.attributes.position.count; i += 3) {
+        const y = o.getVertexPosition(i, new V()).applyMatrix4(o.matrixWorld).y;
+        lo = Math.min(lo, y);
+        hi = Math.max(hi, y);
+      }
+    }
+    out.npcs[n.def.id] = {
+      rig: m.usingRig, blocky: m.blocky.visible, clip: m.rig?.clip, idle: art.idle,
+      // One joined body mesh (the hats and other pack props gone), repainted.
+      skinned: skinned.length, joined: skinned[0]?.name ?? '', painted: painted(skinned[0]),
+      hats: ['Mage_Hat', 'Barbarian_Hat', 'Knight_Helmet', 'Knight_Cape', '1H_Axe', 'Knife', '2H_Staff', '1H_Sword'].filter((x) => m.rig?.node(x)).join(),
+      props: meshes.filter((o) => !o.isSkinnedMesh).map((o) => o.name).join(','),
+      held: (art.held ?? []).every((h) => !!m.rig?.root.getObjectByName(`held:${h.node}`)),
+      kept: (art.props ?? []).every((x) => !!m.rig?.node(x)),
+      station: m.station.children.length,
+      height: +(hi - lo).toFixed(2), feet: +(lo - n.pos.y).toFixed(3),
+    };
+  }
+  // The files shared with the player (barbarian) and the bandits keep their own texture.
+  const playerBody = g.model.rig?.node('Barbarian_Body') ?? null;
+  const playerMap = mapName(playerBody);
+  const bandit = g.enemies.models.find((x) => x.enemy.kind === 'bandit');
+  let banditBody = null;
+  bandit.rig?.root.traverse((o) => o.isSkinnedMesh && !o.name.endsWith('_outline') && !banditBody && (banditBody = o));
+  out.shared = { playerMap, banditMap: mapName(banditBody), player: !!playerBody && !painted(playerBody), bandit: !!banditBody && !painted(banditBody) };
+
+  // A missing body or clips file keeps the placeholder, without throwing; so does a whole town of them.
+  let threw = '';
+  try {
+    const def = town.npcs[0].def;
+    const lone = [new A.NpcModel(def, { ...A.NPC_ART.elder, body: miss }, new V(0, 0, 0), 0), new A.NpcModel(def, { ...A.NPC_ART.hunter, clips: [miss] }, new V(0, 0, 0), 0)];
+    const missingArt = Object.fromEntries(Object.entries(A.NPC_ART).map(([k, v]) => [k, { ...v, body: miss }]));
+    const town2 = new town.constructor(g.world, town.ctx, missingArt);
+    for (const x of lone) x.update(1 / 60, p.pos, false, true);
+    town2.animate(0, 1 / 60, p.pos);
+    await A.modelsSettled();
+    for (let i = 0; i < 5; i++) {
+      for (const x of lone) x.update(1 / 60, p.pos, false, true);
+      town2.animate(i / 60, 1 / 60, p.pos);
+    }
+    out.missing = {
+      state: A.modelState(miss), lone: lone.map((x) => `${x.usingRig ? 'rig' : 'blocky'}/${x.blocky.visible}`).join(),
+      town: town2.npcs.map((n) => (n.model.usingRig ? 'rig' : n.model.blocky.visible ? 'blocky' : 'hidden')).join(),
+      prompts: town2.npcs.map((n) => town2.interactables(n.pos).map((it) => it.label).join()).join('|'),
+    };
+  } catch (e) {
+    threw = String(e);
+  }
+  out.missing = { ...out.missing, threw };
+
+  // Positions and prompts: where they always stood, the same label, radius and colour, from 3 m in.
+  const OLD = { elder: [6, -12], steward: [-14, 14], tinker: [16, 10], hunter: [-18, -6], scholar: [-2, -19], carpenter: [8, 16] };
+  out.places = town.npcs.map((n) => {
+    const [x, z] = OLD[n.def.id];
+    const near = town.interactables(new V(n.pos.x + 2.5, n.pos.y, n.pos.z));
+    const far = town.interactables(new V(n.pos.x + 3.1, n.pos.y, n.pos.z));
+    const it = near[0];
+    return n.pos.x === x && n.pos.z === z && Math.abs(n.pos.y - g.world.groundAt(x, z, 1e9)) < 1e-6 && n.root.position.equals(n.pos) &&
+      near.length === 1 && it.pos === n.pos && it.radius === 2.6 && it.label === `Talk to ${n.def.name}` && it.color === '#ffd27a' && far.length === 0;
+  }).join();
+
+  // Conversation: the carpenter rests facing the square, hammering; the player comes up at his front-left.
+  const n = town.npcs.find((x) => x.def.id === 'carpenter');
+  const m = n.model;
+  const off = m.homeYaw + 0.9;
+  window.tp(n.pos.x - Math.sin(off) * 2.2, n.pos.z - Math.cos(off) * 2.2);
+  const toPlayer = Math.atan2(-(p.pos.x - n.pos.x), -(p.pos.z - n.pos.z));
+  const run = (sec) => { for (let i = 0; i < Math.round(sec * 60); i++) town.animate(i / 60, 1 / 60, p.pos); };
+  const ang = (x) => +Math.abs(Math.atan2(Math.sin(x), Math.cos(x))).toFixed(3);
+  run(1.5);
+  out.talk = { before: { facing: ang(m.facing - m.homeYaw), clip: m.rig.clip, glance: +m.headYaw.toFixed(2), prompt: a.interactables().some((it) => it.label === 'Talk to Carpenter Bram') } };
+  town.talk('carpenter');
+  run(0.6);
+  out.talk.greet = { talking: town.talkingTo, off: ang(m.facing - toPlayer), clip: m.rig.clip, phase: m.phase };
+  run(2.7);
+  out.talk.gesture = { off: ang(m.facing - toPlayer), clip: m.rig.clip, phase: m.phase };
+  // The shop is part of the same conversation.
+  window.pick('Buy furniture');
+  run(0.3);
+  out.talk.shop = { talking: town.talkingTo, off: ang(m.facing - toPlayer) };
+  a.dialog.close();
+  run(2);
+  out.talk.after = { talking: town.talkingTo, facing: ang(m.facing - m.homeYaw), clip: m.rig.clip, phase: m.phase, pos: n.root.position.equals(n.pos) };
+  // Another dialog (a campfire's) is not a conversation with a villager.
+  a.campfireMenu(a.campfires.get('town'));
+  run(0.5);
+  out.talk.campfire = { talking: town.talkingTo, facing: ang(m.facing - m.homeYaw) };
+  a.dialog.close();
+  // Near the player a villager runs its mixer every frame with its outline and sun shadow on; past NPC_DETAIL_RANGE
+  // it drops both and runs at half rate (same clip time); past NPC_ANIM_RANGE its mixer holds still.
+  const mixT = () => m.rig.mixer.time;
+  const look = () => {
+    let outlines = 0, shown = 0, casters = 0;
+    m.rig.root.traverse((o) => { if (!o.isMesh) return; if (o.name.endsWith('_outline')) { outlines++; if (o.visible) shown++; } else if (o.castShadow) casters++; });
+    m.station.traverse((o) => { if (o.isMesh && !o.name.endsWith('_outline') && o.castShadow) casters++; });
+    return `${m.detail}/${shown}of${outlines}/${casters}`;
+  };
+  let t0 = mixT();
+  let updates = 0;
+  const count = (sec) => { const f = m.rig.update.bind(m.rig); m.rig.update = (dt) => (updates++, f(dt)); run(sec); m.rig.update = f; };
+  count(0.5);
+  out.anim = { near: +(mixT() - t0).toFixed(2), nearUpdates: updates, nearLook: look() };
+  window.tp(n.pos.x, n.pos.z + A.NPC_DETAIL_RANGE + 5);
+  t0 = mixT();
+  updates = 0;
+  count(0.5);
+  out.anim.mid = +(mixT() - t0).toFixed(2);
+  out.anim.midUpdates = updates;
+  out.anim.midLook = look();
+  window.tp(n.pos.x, n.pos.z + A.NPC_ANIM_RANGE + 10);
+  t0 = mixT();
+  run(0.5);
+  out.anim.far = +(mixT() - t0).toFixed(2);
+  window.tp(n.pos.x, n.pos.z + 3);
+  run(0.1);
+  out.anim.backLook = look();
+  window.tp(0, 32);
+  return out;
+}, MISSING_NPC);
+{
+  const v = Object.entries(s.npcs);
+  check('villagers: all six show their rigged KayKit body (no placeholder), one joined mesh each, repainted, in their role idle',
+    v.length === 6 && v.every(([, x]) => x.rig && !x.blocky && x.skinned === 1 && /^joined:/.test(x.joined) && x.painted && x.clip === x.idle),
+    JSON.stringify(Object.fromEntries(v.map(([k, x]) => [k, `${x.rig}/${x.blocky}/${x.skinned}/${x.joined}/${x.painted}/${x.clip}`]))));
+  check('villagers: hats and the packs\' weapons are gone; their own props are in hand (ledger, wrench, bow, book and glass, mallet and the crate)',
+    v.every(([, x]) => x.hats === '' && x.held && x.kept) && s.npcs.carpenter.station === 1 && /Bow/.test(s.npcs.hunter.props) && /Spellbook_open/.test(s.npcs.scholar.props),
+    JSON.stringify(Object.fromEntries(v.map(([k, x]) => [k, `${x.hats}|${x.props}|${x.held}/${x.kept}/${x.station}`]))));
+  check('villagers: 1.5 to 1.9 m tall with their feet on the ground', v.every(([, x]) => x.height > 1.4 && x.height < 1.95 && Math.abs(x.feet) < 0.08),
+    JSON.stringify(Object.fromEntries(v.map(([k, x]) => [k, `${x.height} m, feet ${x.feet}`]))));
+  check('villagers: the player\'s and the bandits\' textures stay their own (the repaint is the villagers\' copy)', s.shared.player && s.shared.bandit && s.shared.playerMap !== '', JSON.stringify(s.shared));
+  check('villagers: a missing body or clips file keeps the placeholder without throwing; a town of missing files keeps every placeholder and prompt',
+    !s.missing.threw && s.missing.state === 'failed' && s.missing.lone === 'blocky/true,blocky/true' && s.missing.town === 'blocky,blocky,blocky,blocky,blocky,blocky' &&
+    s.missing.prompts.split('|').every((l, i) => l === `Talk to ${['Elder Maren', 'Steward Ilsa', 'Tinker Oswin', 'Hunter Kael', 'Scholar Vey', 'Carpenter Bram'][i]}`),
+    JSON.stringify(s.missing));
+  check('villagers: positions and talk prompts are unchanged (same spots, label, radius, colour, 3 m reach)', s.places === 'true,true,true,true,true,true', s.places);
+  const t = s.talk;
+  check('villagers: at rest they face the square in their idle and glance at a player nearby; talking, they turn to the player and greet, then gesture',
+    t.before.facing < 0.01 && t.before.clip === 'Hammering' && t.before.glance > 0.3 && t.before.prompt &&
+    t.greet.talking === 'carpenter' && t.greet.clip === 'Waving' && t.greet.phase === 'greet' && t.greet.off < 0.35 &&
+    t.gesture.off < 0.01 && t.gesture.clip === 'Interact' && t.gesture.phase === 'gesture' && t.shop.talking === 'carpenter' && t.shop.off < 0.01,
+    JSON.stringify({ before: t.before, greet: t.greet, gesture: t.gesture, shop: t.shop }));
+  check('villagers: after the conversation they turn back to their idle (and stay put); another dialog is not a conversation',
+    t.after.talking === null && t.after.facing < 0.01 && t.after.clip === 'Hammering' && t.after.phase === 'none' && t.after.pos && t.campfire.talking === null && t.campfire.facing < 0.01,
+    JSON.stringify({ after: t.after, campfire: t.campfire }));
+  const lk = (x) => x.split('/');
+  check('villagers: near the player they animate every frame with outline and shadow; past NPC_DETAIL_RANGE at half rate without either; past NPC_ANIM_RANGE not at all',
+    s.anim.near > 0.45 && s.anim.nearUpdates === 30 && lk(s.anim.nearLook)[0] === 'true' && /^(\d+)of\1$/.test(lk(s.anim.nearLook)[1]) && Number(lk(s.anim.nearLook)[2]) > 0 &&
+    Math.abs(s.anim.mid - s.anim.near) < 0.04 && s.anim.midUpdates === 15 && /^false\/0of\d+\/0$/.test(s.anim.midLook) && s.anim.far === 0 && s.anim.backLook === s.anim.nearLook,
+    JSON.stringify(s.anim));
+}
 
 // 35. Regions and the map.
 s = await run2(() => {
