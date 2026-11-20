@@ -341,33 +341,41 @@ export class Game {
     };
   }
 
-  /** Switch between open-air and dungeon lighting. */
+  /** Switch between open-air and dungeon lighting, and cull whichever world the player is not in. */
   setInterior(on: boolean): void {
-    if (this.interior === on) return;
-    this.interior = on;
-    const fog = this.scene.fog as THREE.Fog;
-    if (on) {
-      const dark = new THREE.Color('#0e0b0a');
-      this.scene.background = dark;
-      fog.color.copy(dark);
-      fog.near = 14;
-      fog.far = 55;
-      this.hemi.color.set('#e8d8c8');
-      this.hemi.groundColor.set('#3a2a20');
-      this.hemi.intensity = 1.1;
-      this.sun.intensity = 1.3;
-      this.sun.color.set('#ffd2a0');
-    } else {
-      this.scene.background = this.sky.color.clone();
-      fog.color.copy(this.sky.color);
-      fog.near = this.sky.near;
-      fog.far = this.sky.far;
-      this.hemi.color.set('#cfe8ff');
-      this.hemi.groundColor.set('#5a4a36');
-      this.hemi.intensity = 1.3;
-      this.sun.intensity = 2.2;
-      this.sun.color.set('#fff2d6');
+    if (this.interior !== on) {
+      this.interior = on;
+      const fog = this.scene.fog as THREE.Fog;
+      if (on) {
+        const dark = new THREE.Color('#0e0b0a');
+        this.scene.background = dark;
+        fog.color.copy(dark);
+        fog.near = 14;
+        fog.far = 55;
+        this.hemi.color.set('#e8d8c8');
+        this.hemi.groundColor.set('#3a2a20');
+        this.hemi.intensity = 1.1;
+        this.sun.intensity = 1.3;
+        this.sun.color.set('#ffd2a0');
+      } else {
+        this.scene.background = this.sky.color.clone();
+        fog.color.copy(this.sky.color);
+        fog.near = this.sky.near;
+        fog.far = this.sky.far;
+        this.hemi.color.set('#cfe8ff');
+        this.hemi.groundColor.set('#5a4a36');
+        this.hemi.intensity = 1.3;
+        this.sun.intensity = 2.2;
+        this.sun.color.set('#fff2d6');
+      }
     }
+    this.world.setOverworldVisible(!on);
+    this.scenery.group.visible = !on;
+    this.home.group.visible = !on;
+    this.adventure.campfires.group.visible = !on;
+    this.adventure.chests.group.visible = !on;
+    this.adventure.town.group.visible = !on;
+    this.adventure.dungeon?.setVisible(on);
   }
 
   /** Show the class pick screen (new character). */
@@ -481,8 +489,16 @@ export class Game {
     this.loot.animate(performance.now() / 1000);
     this.adventure.render(performance.now() / 1000);
     this.map.update();
-    this.scenery.update(this.player.pos, this.camera);
-    this.home.updateOutlines(this.player.pos, this.camera);
+    const d = this.adventure.dungeon;
+    if (d) {
+      const inside = d.contains(this.player.pos) || this.camera.position.y > 280;
+      this.setInterior(inside);
+      if (inside) d.cull(this.player.pos, this.camera);
+    }
+    if (!this.interior) {
+      this.scenery.update(this.player.pos, this.camera);
+      this.home.updateOutlines(this.player.pos, this.camera);
+    }
     // Keep the shadow area centred on the player.
     const p = this.player.pos;
     this.sun.position.set(p.x + 30, p.y + 60, p.z + 20);

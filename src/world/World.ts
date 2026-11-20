@@ -68,6 +68,11 @@ export class World {
   readonly homeSite: THREE.Vector3;
   /** Layout blocks with their meshes (the world models replace the boxes' look, never the colliders). */
   readonly blocks: LayoutBlock[] = [];
+  /** Terrain chunk meshes (kept directly in `group` for tests; toggled when entering the vault). */
+  readonly terrainMeshes: THREE.Mesh[] = [];
+  /** Non-dungeon meshes added via `addSolid` (e.g. spires, home fallback boxes), toggled when inside the vault. */
+  private overworldSolids: THREE.Mesh[] = [];
+  private overworldHidden = false;
   /** Tree spots, and the procedural trees drawn there until (or unless) the tree models load. */
   readonly trees: TreeSpot[] = [];
   readonly treeMeshes: THREE.InstancedMesh[] = [];
@@ -171,7 +176,40 @@ export class World {
     m.position.set((box.minX + box.maxX) / 2, (box.minY + box.maxY) / 2, (box.minZ + box.maxZ) / 2);
     m.castShadow = m.receiveShadow = true;
     this.group.add(m);
+    if (box.zone !== 'dungeon') this.overworldSolids.push(m);
     return m;
+  }
+
+  /** Hide or restore overworld visuals (terrain, fallback blocks/trees) when inside the Ember Vault. */
+  setOverworldVisible(on: boolean): void {
+    if (this.overworldHidden === !on) return;
+    this.overworldHidden = !on;
+    for (const m of this.terrainMeshes) m.visible = on;
+    for (const m of this.overworldSolids) {
+      if (!on) {
+        m.userData.visBeforeVault = m.visible;
+        m.visible = false;
+      } else {
+        if (m.userData.visBeforeVault !== undefined) m.visible = m.userData.visBeforeVault;
+      }
+    }
+    for (const b of this.blocks) {
+      if (!b.cap) continue;
+      if (!on) {
+        b.cap.userData.visBeforeVault = b.cap.visible;
+        b.cap.visible = false;
+      } else if (b.cap.userData.visBeforeVault !== undefined) {
+        b.cap.visible = b.cap.userData.visBeforeVault;
+      }
+    }
+    for (const m of this.treeMeshes) {
+      if (!on) {
+        m.userData.visBeforeVault = m.visible;
+        m.visible = false;
+      } else if (m.userData.visBeforeVault !== undefined) {
+        m.visible = m.userData.visBeforeVault;
+      }
+    }
   }
 
   /** Collision only (the caller draws it): doors and push blocks that move. */
@@ -327,7 +365,9 @@ export class World {
 
   /** Terrain in chunks, with normals from the heightmap so chunk edges match. */
   private buildTerrain(): void {
-    this.group.add(...this.terrainChunks(CHUNK));
+    const chunks = this.terrainChunks(CHUNK);
+    this.terrainMeshes.push(...chunks);
+    this.group.add(...chunks);
   }
 
   /** The terrain meshes in square chunks of `size` cells (tests compare chunk sizes). */

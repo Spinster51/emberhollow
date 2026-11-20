@@ -3239,6 +3239,147 @@ check('phase 2 adds orb volleys or the fire nova', /volley|nova/.test(s.moves2) 
 check('boss loot: epic/legendary gear and a Warden Ember; quest done', s.rare >= 1 && s.ember && s.quest, JSON.stringify(s));
 check('adds vanish after death; the exit opens behind the boss', s.addsGone === 0 && s.exit === 'Leave the vault' && s.outside, JSON.stringify(s));
 
+// 4y. Ember Vault 3D art pass: models, fallback on missing file, colliders, mechanism model states, boss portal.
+s = await run2(async () => {
+  const g = window.game;
+  const A = window.art;
+  const a = g.adventure;
+  const d = a.dungeon;
+  await d.loaded;
+  await A.modelsSettled();
+
+  const hasChild = (obj, sub) => {
+    let found = false;
+    obj.traverse((o) => { if (o.name === sub || o.name.startsWith(sub)) found = true; });
+    return found;
+  };
+  const zoneHash = () => {
+    const z = g.world.boxes.filter((b) => b.zone === 'dungeon')
+      .map((b) => `${b.minX},${b.maxX},${b.minZ},${b.maxZ},${b.minY},${b.maxY},${!!b.noClimb}`)
+      .sort().join('|');
+    let h = 2166136261;
+    for (let i = 0; i < z.length; i++) h = Math.imul(h ^ z.charCodeAt(i), 16777619);
+    return `${g.world.boxes.filter((b) => b.zone === 'dungeon').length}/${(h >>> 0).toString(16)}`;
+  };
+
+  // Reset dungeon to clean closed state and stand at room A.
+  d.solved.clear();
+  d.keys = 0;
+  d.brazierLit = false;
+  d.timer = 0;
+  d.resetBlock();
+  d.sync();
+  d.boss.reset();
+  d.boss.frozen = true;
+  g.player.respawn();
+  a.enterDungeon();
+  g.step(2, null, true);
+
+  const hashClosed = zoneHash();
+  const doorsOk = ['plateDoor', 'crystalDoor', 'lockDoor', 'timedDoor'].every((id) => hasChild(d.doors.get(id).mesh, 'Door'));
+  const roomsOk = ['A', 'B', 'C', 'D', 'E', 'F', 'G'].every((id) => hasChild(d.group, `dungeon:floor:${id}`) && hasChild(d.group, `dungeon:arch:${id}`) && hasChild(d.group, `dungeon:ceil:${id}`));
+  const mechsPresent = hasChild(d.block.mesh, 'PushBlock') && hasChild(d.group, 'PlateFrame') && hasChild(d.group, 'PlatePad')
+    && hasChild(d.group, 'ResetRune') && hasChild(d.group, 'CrystalPedestal') && hasChild(d.group, 'CrystalGem')
+    && hasChild(d.group, 'ChestGoldBody') && hasChild(d.group, 'LeverArm') && hasChild(d.group, 'BrazierBowl')
+    && hasChild(d.group, 'ExitStairsA') && hasChild(d.group, 'ExitPortal');
+  const dressOk = hasChild(d.group, 'dungeon:dress:TorchWall') && hasChild(d.group, 'dungeon:dress:ChainHang') && hasChild(d.group, 'dungeon:dress:Barrel');
+  const fallbacksHidden = d.group.getObjectByName('dungeon:fallbackTorches')?.visible === false;
+  const outsideTest = (() => {
+    window.tp(0, 32);
+    g.step(1, null, true);
+    const out = !d.group.visible && !g.interior;
+    a.enterDungeon();
+    g.step(1, null, true);
+    return out && d.group.visible && g.interior && !g.scenery.group.visible;
+  })();
+
+  // Open plate door via pushing block onto plate, verify model state + collider removal/restore.
+  d.block.box.minX = d.spot('plate').x - 1; d.block.box.maxX = d.spot('plate').x + 1;
+  d.block.box.minZ = d.spot('plate').z - 1; d.block.box.maxZ = d.spot('plate').z + 1;
+  g.step(2, null, true);
+  for (let i = 0; i < 60; i++) d.animate(i * 0.02, 0.05);
+  const plateDownY = +(d.group.getObjectByName('PlatePad')?.position.y ?? 99).toFixed(2);
+  const plateDoorGone = !g.world.hasCollider(d.doors.get('plateDoor').box);
+  const plateDoorAnim = d.doors.get('plateDoor').anim;
+  d.solved.delete('plate');
+  d.resetBlock();
+  d.sync();
+  g.step(2, null, true);
+  const plateUpY = +(d.group.getObjectByName('PlatePad')?.position.y ?? 0).toFixed(2);
+  const hashRestored = zoneHash();
+
+  // Hit crystal -> model crystal turns green; open keyChest -> lid opens & unlock lockDoor; pull lever -> arm rotates; light brazier -> flame on.
+  const cSpot = d.spot('crystal');
+  g.player.pos.set(cSpot.x + 1.5, cSpot.y, cSpot.z);
+  d.strike(g.player.pos, g.player.pos.clone().set(-1, 0, 0), 3, 2);
+  let crystalGreen = false;
+  d.group.getObjectByName('CrystalGem')?.traverse((o) => {
+    if (o.isMesh && o.material?.name === 'DungeonCrystal') crystalGreen = o.material.color.g > o.material.color.r;
+  });
+  d.openKeyChest();
+  d.unlock();
+  const lockDoorGone = !g.world.hasCollider(d.doors.get('lockDoor').box);
+  const chestLidRot = +(d.group.getObjectByName('ChestGoldLid')?.parent?.rotation?.x ?? 0).toFixed(2);
+  d.solved.add('timed');
+  d.sync();
+  const leverRot = +(d.group.getObjectByName('LeverArm')?.rotation?.x ?? 99).toFixed(2);
+  d.rest();
+  const brazierLitVis = !!d.group.getObjectByName('BrazierFlame')?.visible;
+
+  // Boss room loads, boss fight starts, exit portal stays dormant while alive then lights when killed.
+  const gp = d.spot('exitG');
+  window.tp(gp.x, gp.z + 10, gp.y);
+  g.step(2, null, true);
+  const roomGVis = !!d.group.getObjectByName('dungeon:room:G')?.visible && d.group.getObjectByName('dungeon:room:A')?.visible === false;
+  d.boss.frozen = false;
+  for (let i = 0; i < 30; i++) { g.player.hp = g.player.stats.maxHp; g.step(1, null, true); }
+  const bossEngaged = d.boss.alive && d.boss.state !== 'idle';
+  const portalColor = (on) => {
+    let col = 0;
+    d.group.getObjectByName('ExitPortal')?.traverse((o) => { if (o.isMesh && o.material?.name === 'ExitPortalCore') col = o.material.color.getHex(); });
+    return on ? col > 0x208020 : col < 0x303030;
+  };
+  const portalDormant = portalColor(false);
+  d.boss.takeHit({ damage: 1e6, poise: 0, knockback: 0, from: g.player.pos.clone() }, []);
+  g.step(2, null, true);
+  const portalLit = portalColor(true);
+  d.boss.reset();
+  d.boss.frozen = true;
+
+  // Missing dungeon file fallback without polluting main world.
+  let threw = '';
+  let missOk = false;
+  try {
+    const w2 = new A.World(A.TEST_LAYOUT);
+    const dummy = { list: [], spawn: () => d.boss };
+    const hud = document.createElement('div');
+    const dMiss = new A.Dungeon(w2, dummy, hud, { message() {}, heal() {}, setRespawn() {}, leave() {}, gold() {} }, 'models/dungeon/missing-dungeon.glb', A.WORLD_FILE);
+    const loadedOk = await dMiss.loaded;
+    missOk = loadedOk === false && !dMiss.modelsReady && dMiss.group.getObjectByName('dungeon:fallbackTorches')?.visible === true && !hasChild(dMiss.group, 'PushBlock');
+  } catch (e) { threw = String(e); }
+
+  // Restore player outside cleanly.
+  d.solved.clear();
+  d.keys = 0;
+  d.brazierLit = false;
+  d.timer = 0;
+  d.resetBlock();
+  d.sync();
+  a.leaveDungeon();
+  g.step(2, null, true);
+  return {
+    ready: d.modelsReady, doorsOk, roomsOk, mechsPresent, dressOk, fallbacksHidden, outsideTest,
+    hashClosed, hashRestored, plateDownY, plateUpY, plateDoorGone, plateDoorAnim, crystalGreen, lockDoorGone, chestLidRot, leverRot, brazierLitVis,
+    roomGVis, bossEngaged, portalDormant, portalLit, threw, missOk,
+  };
+});
+check('dungeon art: all room kits, doors, mechanisms, exits and instanced dressing load and cull cleanly',
+  s.ready && s.doorsOk && s.roomsOk && s.mechsPresent && s.dressOk && s.fallbacksHidden && s.outsideTest, JSON.stringify(s));
+check('dungeon art: colliders match before and after door opens/closes; missing file keeps fallback boxes without throwing',
+  s.hashClosed.startsWith('49/') && s.hashClosed === s.hashRestored && s.plateDoorGone && s.lockDoorGone && !s.threw && s.missOk, JSON.stringify(s));
+check('dungeon art: mechanisms animate and update model states (plate, crystal, key chest, timed lever, brazier, boss portal)',
+  s.plateDownY < s.plateUpY && s.plateDoorAnim > 0.5 && s.crystalGreen && Math.abs(s.chestLidRot + 1.75) < 0.05 && Math.abs(s.leverRot + 0.6) < 0.05 && s.brazierLitVis && s.roomGVis && s.bossEngaged && s.portalDormant && s.portalLit, JSON.stringify(s));
+
 if (shotsDir) {
   await run2(() => {
     const g = window.game;

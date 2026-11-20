@@ -85,14 +85,15 @@ Overworld props and environment live in `public/models/world/world.glb` (895 KB,
 - [x] Exploration chest: KayKit Dungeon Remastered `chest` (tier 0) and `chest_gold` (tier 1), body + hinged lid (`CHEST_ART`).
 - [x] Campfire: stone ring from KayKit Forest rocks (`Rock_3_A/B/E`) + crossed logs, ash and glowing embers built for the game.
 - [x] Dungeon gate: dressed stone pillars, keystone lintel and iron-bound sealed door with glowing purple/ember runes, built for the game to match the gate colliders.
-- [ ] Crystal (hit switch)
-- [ ] Lever
-- [ ] Brazier
-- [ ] Pressure plate
-- [ ] Push block
-- [ ] Locked door
-- [ ] Key chest
-- [ ] Rune (block reset)
+- [x] Crystal (hit switch): carved rune pedestal + floating faceted shard (`CrystalPedestal` / `CrystalGem` in `public/models/dungeon/dungeon.glb`), glowing red until struck to green.
+- [x] Lever: stone base + iron crank (`LeverBase` / `LeverArm` in `dungeon.glb`), tilting across when pulled for the timed gate.
+- [x] Brazier: iron bowl on tripod legs with glowing embers + tall flame (`BrazierBowl` / `BrazierFlame` in `dungeon.glb`).
+- [x] Pressure plate: recessed stone frame + glowing rune pad (`PlateFrame` / `PlatePad` in `dungeon.glb`) that sinks and brightens when weighted.
+- [x] Push block: heavy banded monolith (`PushBlock` in `dungeon.glb`) matching the 2 m push-block collider.
+- [x] Locked door: four sliding doors (`DoorPlate`, `DoorCrystal`, `DoorLock`, `DoorTimed` in `dungeon.glb`) with stone slab + rune/key/chain motifs.
+- [x] Key chest: gilded KayKit Dungeon `chest_gold` reused from `world.glb` (`ChestGoldBody` / `ChestGoldLid`), hinging open when looted.
+- [x] Rune (block reset): circular glowing floor seal (`ResetRune` in `dungeon.glb`).
+- [x] Ember Vault architecture & dressing (`public/models/dungeon/dungeon.glb`, 503 KB, one 256 px KayKit Dungeon palette atlas, quantized with glTF-Transform; reused `world.glb` banners/barrels/crates/rubble/candles/bones/skulls): KayKit Dungeon Remastered floors, walls (`wall`, `wall_arched`, `wall_cracked`, `wall_pillar`), pillars, archway lintels, railings (`barrier`), entry stairs (`stairs_walled`), ceiling slabs/beams, `ExitPortal`, wall torches (`torch_mounted`), and ceiling chains (`ChainHang`), merged per room in `src/world/Dungeon.ts` via `src/world/kit.ts` with open-doorway room culling and instanced dressing.
 - [x] Town house & home shell: timber-frame building kit built for the game on the KayKit Medieval Hexagon palette (plaster, stone footing, corner/panel posts, beams, windows, doors, wall lamps, shingled roofs and ridge), merged per building group in `src/world/kit.ts` and `src/home/Home.ts`. Also town well (`Well`), lamp posts (`post_lantern`), benches (`bench`), crates, barrels, sacks and buckets.
 - [x] Glider: arched red-and-gold cloth wing on wooden spars, built for the game (`Glider` in `world.glb`).
 

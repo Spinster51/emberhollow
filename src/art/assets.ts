@@ -761,3 +761,26 @@ export const CHEST_ART = {
   gold: { body: 'ChestGoldBody', lid: 'ChestGoldLid', hinge: [0, 0.2706, -0.3057] as [number, number, number] },
   open: -1.75,
 };
+
+// ---------------------------------------------------------------- dungeon: the Ember Vault (milestone 8)
+
+/**
+ * The Ember Vault's architectural kit, puzzle mechanisms, doors, portals and torches (KayKit Dungeon
+ * Remastered, plus doors and mechanisms built for the game on its 256 px palette; see CREDITS.md).
+ * Repeated chest/barrel/crate/banner/rubble dressing reuses `WORLD_FILE` rather than duplicating nodes.
+ */
+export const DUNGEON_FILE = 'models/dungeon/dungeon.glb';
+
+/** Outline widths for standalone dungeon mechanisms and doors (static merged rooms stay un-outlined). */
+export const DUNGEON_OUTLINE: Record<string, number> = {
+  PushBlock: 0.03,
+  CrystalGem: 0.018,
+  LeverArm: 0.02,
+  BrazierBowl: 0.03,
+  ResetRune: 0.025,
+  DoorPlate: 0.03,
+  DoorCrystal: 0.03,
+  DoorLock: 0.03,
+  DoorTimed: 0.03,
+  ExitPortal: 0.03,
+};

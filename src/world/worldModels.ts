@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import { cloneNode, loadModel, modelState } from '../core/models';
-import { WORLD_FILE, WORLD_OUTLINE } from '../art/assets';
+import { DUNGEON_FILE, DUNGEON_OUTLINE, WORLD_FILE, WORLD_OUTLINE } from '../art/assets';
 
 /**
  * The world file (milestone 8): vegetation, rocks, the building kit, ruins, gate, well, chests, campfires,
@@ -11,31 +11,43 @@ import { WORLD_FILE, WORLD_OUTLINE } from '../art/assets';
  */
 
 const prepared = new Set<string>();
+const GLOW_MATS = new Set(['WorldGlow', 'DungeonGlow', 'PlateGlow', 'BrazierEmber', 'ExitPortalGlow', 'ExitPortalMid', 'ExitPortalCore']);
 
-/** Start loading a world file (once; the game never waits on it). Resolves with the parsed file. */
-export function loadWorldFile(file = WORLD_FILE): Promise<GLTF> {
-  return loadModel(file, { outline: (m) => WORLD_OUTLINE[nodeName(m)] ?? 0 }).then((gltf) => {
+function loadPaletteFile(file: string, outlines: Record<string, number>): Promise<GLTF> {
+  return loadModel(file, { outline: (m) => outlines[nodeName(m)] ?? 0 }).then((gltf) => {
     if (!prepared.has(file)) {
       prepared.add(file);
       gltf.scene.traverse((o) => {
         const mesh = o as THREE.Mesh;
         if (!mesh.isMesh || mesh.name.endsWith('_outline')) return;
         const mat = mesh.material as THREE.MeshToonMaterial;
-        if (!mat.map || mat.userData.worldReady) return;
+        if (mat.userData.worldReady) return;
         mat.userData.worldReady = true;
-        // A gradient palette: no mipmaps, so distant pieces keep their cell's colour instead of bleeding into the next.
-        mat.map.minFilter = THREE.LinearFilter;
-        mat.map.generateMipmaps = false;
-        mat.map.needsUpdate = true;
-        if (mat.name === 'WorldGlow') {
-          mat.emissiveMap = mat.map;
+        if (mat.map) {
+          // A gradient palette: no mipmaps, so distant pieces keep their cell's colour instead of bleeding into the next.
+          mat.map.minFilter = THREE.LinearFilter;
+          mat.map.generateMipmaps = false;
+          mat.map.needsUpdate = true;
+        }
+        if (GLOW_MATS.has(mat.name)) {
+          if (mat.map) mat.emissiveMap = mat.map;
           mat.emissive.set(0xffffff);
-          mat.emissiveIntensity = 0.85;
+          mat.emissiveIntensity = mat.name === 'WorldGlow' || mat.name === 'DungeonGlow' ? 0.85 : 0.25;
         }
       });
     }
     return gltf;
   });
+}
+
+/** Start loading a world file (once; the game never waits on it). Resolves with the parsed file. */
+export function loadWorldFile(file = WORLD_FILE): Promise<GLTF> {
+  return loadPaletteFile(file, WORLD_OUTLINE);
+}
+
+/** Start loading the dungeon file (once; the game never waits on it). Resolves with the parsed file. */
+export function loadDungeonFile(file = DUNGEON_FILE): Promise<GLTF> {
+  return loadPaletteFile(file, DUNGEON_OUTLINE);
 }
 
 /** The top-level node a mesh belongs to (multi-material nodes load as a group of primitives). */
@@ -96,13 +108,19 @@ export function pieceParts(name: string, file = WORLD_FILE): PiecePart[] | null 
 
 /** The single geometry of a one-material node in the file's own (quantized) form, for instancing. */
 export function pieceGeometry(name: string, file = WORLD_FILE): { geometry: THREE.BufferGeometry; material: THREE.Material } | null {
+  return pieceMeshes(name, file)?.[0] ?? null;
+}
+
+/** All mesh primitives of a node in the file's own quantized form, for instancing multi-material props. */
+export function pieceMeshes(name: string, file = WORLD_FILE): PiecePart[] | null {
   const node = worldNode(name, file);
   if (!node) return null;
-  let found: THREE.Mesh | null = null;
+  const out: PiecePart[] = [];
   node.traverse((o) => {
     const mesh = o as THREE.Mesh;
-    if (!found && mesh.isMesh && !mesh.name.endsWith('_outline')) found = mesh;
+    if (mesh.isMesh && !mesh.name.endsWith('_outline')) {
+      out.push({ geometry: mesh.geometry, material: mesh.material as THREE.Material });
+    }
   });
-  const mesh = found as THREE.Mesh | null;
-  return mesh ? { geometry: mesh.geometry, material: mesh.material as THREE.Material } : null;
+  return out.length ? out : null;
 }

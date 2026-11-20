@@ -20,8 +20,8 @@ if (new URLSearchParams(location.search).has('test')) {
     import('./items/items'), import('./ui/InventoryUI'), import('./save/Save'), import('./items/crafting'), import('./core/sound'),
     import('./core/models'), import('./core/rig'), import('./player/PlayerModel'), import('./art/assets'), import('./combat/EnemyModel'),
     import('./items/ItemMesh'), import('./home/furniture'), import('./home/furnitureIcons'), import('./world/NpcModel'),
-    import('./world/World'), import('./world/layouts'), import('./world/Scenery'), import('./world/kit'), import('./world/worldModels'), import('three'),
-  ]).then(([items, ui, save, crafting, snd, models, rig, playerModel, assets, enemyModel, itemMesh, furniture, furnitureIcons, npcModel, world, layouts, scenery, kit, worldModels, three]) => {
+    import('./world/World'), import('./world/layouts'), import('./world/Scenery'), import('./world/kit'), import('./world/worldModels'), import('./world/Dungeon'), import('three'),
+  ]).then(([items, ui, save, crafting, snd, models, rig, playerModel, assets, enemyModel, itemMesh, furniture, furnitureIcons, npcModel, world, layouts, scenery, kit, worldModels, dungeon, three]) => {
     (window as unknown as { items: unknown }).items = { ...items, tooltipHtml: ui.tooltipHtml, validateAccount: save.validateAccount };
     (window as unknown as { crafting: unknown }).crafting = crafting;
     (window as unknown as { sound: unknown }).sound = snd;
@@ -30,7 +30,7 @@ if (new URLSearchParams(location.search).has('test')) {
       ...models, Rig: rig.Rig, PlayerModel: playerModel.PlayerModel, EnemyModel: enemyModel.EnemyModel, NpcModel: npcModel.NpcModel,
       ...assets, ...itemMesh, ...furniture, ...furnitureIcons,
       // World models: a spare World / Scenery for the fallback checks, the kit and the world file helpers.
-      World: world.World, TEST_LAYOUT: layouts.TEST_LAYOUT, Scenery: scenery.Scenery, KitBuilder: kit.KitBuilder, ...worldModels, Raycaster: three.Raycaster,
+      World: world.World, TEST_LAYOUT: layouts.TEST_LAYOUT, Scenery: scenery.Scenery, KitBuilder: kit.KitBuilder, ...worldModels, Dungeon: dungeon.Dungeon, Raycaster: three.Raycaster,
     };
   });
 }
