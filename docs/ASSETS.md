@@ -81,9 +81,10 @@ All in `public/models/home/furniture.glb` (about 360 KB: 16 nodes, about 9,500 t
 - [x] Workbench: KayKit Dungeon `table_medium` as the bench; anvil, hammer and tongs built for the game (the anvil keeps its ember glow).
 
 ## World and dungeon (about 12 models)
-- [ ] Exploration chest
-- [ ] Campfire
-- [ ] Dungeon gate
+Overworld props and environment live in `public/models/world/world.glb` (895 KB, one 512 px atlas combining the KayKit Forest Nature, Medieval Hexagon, Dungeon Remastered and Halloween Bits palettes; quantized with glTF-Transform). Every model is visual only: colliders, climbable faces, doors, prompts and saves are unchanged, and a missing file keeps the procedural boxes and cone trees without throwing.
+- [x] Exploration chest: KayKit Dungeon Remastered `chest` (tier 0) and `chest_gold` (tier 1), body + hinged lid (`CHEST_ART`).
+- [x] Campfire: stone ring from KayKit Forest rocks (`Rock_3_A/B/E`) + crossed logs, ash and glowing embers built for the game.
+- [x] Dungeon gate: dressed stone pillars, keystone lintel and iron-bound sealed door with glowing purple/ember runes, built for the game to match the gate colliders.
 - [ ] Crystal (hit switch)
 - [ ] Lever
 - [ ] Brazier
@@ -92,10 +93,12 @@ All in `public/models/home/furniture.glb` (about 360 KB: 16 nodes, about 9,500 t
 - [ ] Locked door
 - [ ] Key chest
 - [ ] Rune (block reset)
-- [ ] Town house
+- [x] Town house & home shell: timber-frame building kit built for the game on the KayKit Medieval Hexagon palette (plaster, stone footing, corner/panel posts, beams, windows, doors, wall lamps, shingled roofs and ridge), merged per building group in `src/world/kit.ts` and `src/home/Home.ts`. Also town well (`Well`), lamp posts (`post_lantern`), benches (`bench`), crates, barrels, sacks and buckets.
+- [x] Glider: arched red-and-gold cloth wing on wooden spars, built for the game (`Glider` in `world.glb`).
 
-## Environment (not yet counted)
-- [ ] Trees, rocks, bushes, fences, cliff and spire pieces, roads and bridges. Currently built from boxes; count to be confirmed in an audit before the art pass.
+## Environment
+- [x] Trees, bushes, grass and rocks: KayKit Forest Nature Pack (CC0), all instanced in `src/world/Vegetation.ts` with 24 m spatial grid, near full-detail pools, view-cone far LOD pools, LOD shadow proxies on a shadow-only layer, and camera-to-player occlusion hiding. Sunmeadow (broadleaf), Gloamwood (pines, thinned with glades), Sundered Ruins (bare & autumn trees), plus region-tinted terrain strata and spire-foot crags.
+- [x] Ruins and enemy camps: KayKit Dungeon Remastered `wall` (recoloured to sandstone) + square column kit built for the game; enemy camp dressing (A-frame tents, crates, barrels, fences, flags, banners, gravestones, shrines, bones, rubble) merged per camp and distance-culled in `src/world/Scenery.ts`.
 
 ## Not needed yet
 - Health and mana potions (Q/R), added in milestone 7.

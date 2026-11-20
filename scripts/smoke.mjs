@@ -29,7 +29,8 @@ const MISSING_ENEMY = 'models/enemies/missing-test.glb';
 const MISSING_ITEM = 'models/items/missing-test.glb';
 const MISSING_FURNITURE = 'models/home/missing-test.glb';
 const MISSING_NPC = 'models/npcs/missing-test.glb';
-const MISSING = [MISSING_MODEL, MISSING_ENEMY, MISSING_ITEM, MISSING_FURNITURE, MISSING_NPC];
+const MISSING_WORLD = 'models/world/missing-test.glb';
+const MISSING = [MISSING_MODEL, MISSING_ENEMY, MISSING_ITEM, MISSING_FURNITURE, MISSING_NPC, MISSING_WORLD];
 const expectedError = (m) =>
   m.text().startsWith('Failed to load resource') && MISSING.some((f) => (m.location().url ?? '').endsWith(`/${f}`));
 page.on('pageerror', (e) => errors.push(String(e)));
@@ -87,6 +88,17 @@ await run(() => {
   };
 });
 
+// Colliders, before anything moves (world models, milestone 8: the same boxes as before the art pass).
+await run(() => {
+  window.colliderHash = () => {
+    const fnv = (str) => { let h = 0x811c9dc5; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16); };
+    const key = (b) => [b.minX, b.maxX, b.minY, b.maxY, b.minZ, b.maxZ].map((v) => v.toFixed(3)).join(',') + (b.noClimb ? 'n' : '') + (b.zone ?? '');
+    const boxes = window.game.world.boxes.map(key).sort();
+    return `${boxes.length}/${fnv(boxes.join('|'))}`;
+  };
+});
+const testColliders = await run(() => window.colliderHash());
+
 // 0. Art (milestone 8): the warrior shows its rigged KayKit body (barbarian) once the files load.
 let art = await run(async () => {
   await window.settleModels();
@@ -101,6 +113,22 @@ let art = await run(async () => {
 });
 check('warrior shows the rigged character, not the placeholder', art.rig === true && art.cls === 'warrior' && art.body && !art.blocky && art.clips, JSON.stringify(art));
 check('the equipped sword sits in the rig\'s right hand slot; the pack\'s own props are hidden', art.sword && art.swordItem === 1 && art.packProps === '', JSON.stringify(art));
+
+// World models on the test map (milestone 8): the tower, wall and block become dressed stone, the crates crates;
+// the colliders are the boxes they always were (count and hash taken before the models loaded).
+const wTest = await run(async () => {
+  const g = window.game;
+  await g.scenery.loaded;
+  await window.art.modelsSettled();
+  const w = g.world;
+  return {
+    ready: g.scenery.ready, blocks: g.scenery.stats.blocks, hidden: w.blocks.every((b) => !b.mesh.visible && (!b.cap || !b.cap.visible)),
+    group: g.scenery.group.children.map((c) => c.name).filter((n) => n.startsWith('scenery:')).join(), colliders: window.colliderHash(),
+    trees: w.treeMeshes.every((m) => !m.visible) && g.scenery.vegetation.meshes().some((m) => m.node.startsWith('TreeMeadow')),
+  };
+});
+check('world models (test map): the tower, wall, block and crates are dressed stone and crates; colliders unchanged (19 boxes, same hash)',
+  wTest.ready && wTest.blocks === 5 && wTest.hidden && wTest.group.includes('scenery:blocks') && wTest.trees && wTest.colliders === testColliders && testColliders === '19/33a51860', JSON.stringify({ ...wTest, testColliders }));
 
 // A model file that fails to load keeps the blocky placeholder and throws nothing.
 art = await run(async (miss) => {
@@ -1777,8 +1805,19 @@ page2.on('pageerror', (e) => errors.push(String(e)));
 page2.on('console', (m) => m.type() === 'error' && !expectedError(m) && errors.push(m.text()));
 // The villager fallback checks ask for a missing model file on this page too (a real host answers 404).
 await page2.route(`**/${MISSING_NPC}`, (r) => r.fulfill({ status: 404, body: 'not found' }));
+await page2.route(`**/${MISSING_WORLD}`, (r) => r.fulfill({ status: 404, body: 'not found' }));
 await page2.goto(`http://localhost:${PORT}/?test&world=main`);
 await page2.waitForFunction(() => window.game && window.items);
+// Colliders before anything moves (compared after the world models are in, section 35b).
+const mainColliders = await page2.evaluate(() => {
+  const fnv = (str) => { let h = 0x811c9dc5; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16); };
+  const key = (b) => [b.minX, b.maxX, b.minY, b.maxY, b.minZ, b.maxZ].map((v) => v.toFixed(3)).join(',') + (b.noClimb ? 'n' : '') + (b.zone ?? '');
+  window.colliderHash = () => {
+    const boxes = window.game.world.boxes.map(key).sort();
+    return `${boxes.length}/${fnv(boxes.join('|'))}`;
+  };
+  return window.colliderHash();
+});
 const run2 = (fn, arg) => page2.evaluate(fn, arg);
 const shot2 = async (name) => {
   if (shotsDir) await page2.evaluate(() => window.game.step(0, null, true)), await page2.screenshot({ path: `${shotsDir}/${name}.png` });
@@ -2352,11 +2391,254 @@ s = await run2(() => {
     npcs: window.game.adventure.town.npcs.length,
   };
 });
-check('main map: 600 m, chunked, 4 regions with rising levels',
-  s.size === 600 && s.chunks === 144 && s.town === 'town' && s.meadow.startsWith('meadow/') && s.forest.startsWith('forest/') && s.ruins.startsWith('ruins/') &&
+check('main map: 600 m, chunked (100 m terrain chunks), 4 regions with rising levels',
+  s.size === 600 && s.chunks === 36 && s.town === 'town' && s.meadow.startsWith('meadow/') && s.forest.startsWith('forest/') && s.ruins.startsWith('ruins/') &&
   Number(s.forest.split('/')[1]) >= 5 && Number(s.ruins.split('/')[1]) >= 10,
   JSON.stringify(s));
 check('7 campfires and 6 villagers', s.campfires === 7 && s.npcs === 6, `${s.campfires} / ${s.npcs}`);
+
+// 35b. World models (milestone 8): every prop kind shows its model once the world file loads; the boxes they
+// replace are hidden, never removed; vegetation is instanced (near pools + far LOD); a missing file keeps the
+// old look; colliders, climbs, chests, campfires and the gate work as before.
+s = await run2(async () => {
+  const g = window.game;
+  const A = window.art;
+  const a = g.adventure;
+  const w = g.world;
+  const sc = g.scenery;
+  await sc.loaded;
+  await A.modelsSettled();
+  g.step(0, null, true);
+  const out = { ready: sc.ready, stats: sc.stats, colliders: window.colliderHash() };
+  const tagged = w.blocks.filter((b) => b.spec.art);
+  out.boxesHidden = `${tagged.filter((b) => !b.mesh.visible).length}/${tagged.length}`;
+  out.groups = [...new Set(sc.group.children.map((c) => c.name.split(':').slice(0, 2).join(':')))].sort().join();
+  out.treesHidden = w.treeMeshes.every((m) => !m.visible);
+  // Every node the art tables name has its instanced kind.
+  const want = new Set(['BoulderC']);
+  for (const list of Object.values(A.TREE_ART)) for (const p of list) want.add(p.node);
+  for (const layer of A.SCATTER_ART) for (const list of Object.values(layer.pieces)) for (const p of list) want.add(p.node);
+  const kinds = sc.vegetation.meshes();
+  out.vegMissing = [...want].filter((n) => !kinds.some((k) => k.node === n)).join();
+  out.vegInstanced = kinds.every((k) => k.instanced);
+  out.counts = sc.vegetation.counts;
+  out.campfires = a.campfires.list.map((c) => `${c.pit.userData.model}:${c.pit.children[0]?.name}`).filter((x) => x !== 'true:Campfire').join();
+  out.chests = a.chests.list.map((c) => `${c.tier}:${c.look.userData.model}:${c.look.children[0]?.name}`).filter((x) => x !== '0:true:chest:ChestBody' && x !== '1:true:chest:ChestGoldBody').join();
+  const hm = g.home.shellModel;
+  out.home = `${!!hm.body}/${!!hm.roof}/${!!hm.doorFront}/${!!hm.doorBack}/${g.home.shell.every((p) => !p.mesh.visible)}`;
+  out.glider = `${g.model.gliderLook.userData.model}:${g.model.gliderLook.children[0]?.name}`;
+  // The town's walls sit on their colliders: rays from 1 m out hit the model within 0.17 m of the box face
+  // (posts, beams, sills and shingles stand proud by up to 0.16; nothing sinks in more than 5 cm).
+  const town = sc.group.children.find((c) => c.name === 'scenery:town');
+  const ruins = sc.group.children.find((c) => c.name === 'scenery:ruins');
+  const gate = sc.group.children.find((c) => c.name === 'scenery:gate');
+  const V = g.player.pos.constructor;
+  const fit = (group, boxes, heights, skip = () => false) => {
+    let worst = 0;
+    let n = 0;
+    let miss = 0;
+    const rc = new A.Raycaster();
+    const meshes = [];
+    group.traverse((o) => o.isMesh && !o.name.endsWith('_outline') && meshes.push(o));
+    for (const b of boxes) {
+      const faces = [[b.maxX, 0, 1, 0, b.minZ, b.maxZ], [b.minX, 0, -1, 0, b.minZ, b.maxZ], [b.maxZ, 1, 0, 1, b.minX, b.maxX], [b.minZ, 1, 0, -1, b.minX, b.maxX]];
+      for (const [plane, axisZ, sx, sz, lo, hi] of faces) {
+        for (const ft of [0.2, 0.37, 0.63, 0.8]) {
+          for (const y of heights(b)) {
+            const t = lo + (hi - lo) * ft;
+            const x = axisZ ? t : plane;
+            const z = axisZ ? plane : t;
+            const nx = axisZ ? 0 : sx;
+            const nz = axisZ ? sz : 0;
+            if (skip(x, y, z)) continue;
+            rc.set(new V(x + nx, y, z + nz), new V(-nx, 0, -nz));
+            rc.far = 1.4;
+            const hit = rc.intersectObjects(meshes, false)[0];
+            n++;
+            if (!hit) {
+              miss++;
+              continue;
+            }
+            worst = Math.max(worst, Math.abs(1 - hit.distance));
+          }
+        }
+      }
+    }
+    return `${n}/${miss}/${worst.toFixed(3)}`;
+  };
+  const houses = w.blocks.filter((b) => b.spec.art === 'house').map((b) => b.box);
+  // Skip the door bay (door, step and lamp): the middle of the side that faces the square.
+  const doors = houses.map((b) => {
+    const cx = (b.minX + b.maxX) / 2;
+    const cz = (b.minZ + b.maxZ) / 2;
+    const c = [[cx, b.maxZ, 0, 1], [b.maxX, cz, 1, 0], [cx, b.minZ, 0, -1], [b.minX, cz, -1, 0]];
+    return c.sort((u, v) => (v[2] * -cx + v[3] * -cz) - (u[2] * -cx + u[3] * -cz))[0];
+  });
+  const door = (x, y, z) => doors.some(([dx, dz]) => Math.hypot(x - dx, z - dz) < 2.3);
+  out.fitHouses = fit(town, houses, (b) => [b.minY + 1.4, b.minY + 2.2, b.minY + 3.6], door);
+  out.fitColumns = fit(ruins, w.blocks.filter((b) => b.spec.art === 'column').map((b) => b.box).slice(0, 12), (b) => [b.maxY - 1.5, (b.maxY + b.minY) / 2 + 0.6]);
+  // Ruin walls use KayKit's notched dungeon wall segments: sample the solid lower-mid body (not the broken parapet top).
+  out.fitWalls = fit(ruins, w.blocks.filter((b) => b.spec.art === 'ruinWall').map((b) => b.box).slice(0, 12), (b) => [b.minY + (b.maxY - b.minY) * 0.45]);
+  out.fitGate = fit(gate, w.blocks.filter((b) => b.spec.art === 'gatePillar').map((b) => b.box), (b) => [b.minY + 2.6, b.minY + 6.3]);
+  // Trees stay clear of campfires, chests and enemy camp centres.
+  const clearOf = (pts, r) => w.trees.every((t) => pts.every(([x, z]) => Math.hypot(t.x - x, t.z - z) >= r - 0.01));
+  out.clearFires = clearOf(w.layout.campfires.map((c) => [c.x, c.z]), 6.5);
+  out.clearChests = clearOf(w.layout.chests.map((c) => [c.x, c.z]), 6.5);
+  out.clearCamps = clearOf(w.campCentres, 13.5);
+  return out;
+});
+check('world models: town houses, the well, ruins, the gate, camp and town dressing replace the boxes (all tagged boxes hidden, none removed)',
+  s.ready && s.stats.houses === 6 && s.stats.columns > 20 && s.stats.ruinWalls > 20 && s.stats.gate === 4 && s.stats.camps >= 19 && s.stats.campProps > 120 && s.stats.townProps > 10 &&
+  s.boxesHidden.split('/')[0] === s.boxesHidden.split('/')[1] && s.groups.includes('scenery:town') && s.groups.includes('scenery:ruins') && s.groups.includes('scenery:gate') && s.groups.includes('scenery:camp'),
+  JSON.stringify({ stats: s.stats, boxesHidden: s.boxesHidden, groups: s.groups }));
+check('world models: every tree, bush, grass, pebble and rock kind is an instanced mesh; the cone trees are hidden; trees stay clear of campfires, chests and camps',
+  s.treesHidden && s.vegMissing === '' && s.vegInstanced && s.counts.trees === 2700 && s.counts.grass > 3000 && s.counts.bush > 600 && s.counts.boulder > 200 && s.counts.crags === 36 && s.clearFires && s.clearChests && s.clearCamps,
+  JSON.stringify({ vegMissing: s.vegMissing, counts: s.counts, clearFires: s.clearFires, clearChests: s.clearChests, clearCamps: s.clearCamps }));
+check('world models: campfires, chests (gilded on tier 1), the home shell (with its locked door) and the glider show their models',
+  s.campfires === '' && s.chests === '' && s.home === 'true/true/true/true/true' && s.glider === 'true:Glider', JSON.stringify({ campfires: s.campfires, chests: s.chests, home: s.home, glider: s.glider }));
+check('world models: colliders unchanged (159 boxes, same hash as before the art pass)', s.colliders === mainColliders && mainColliders === '159/882569a5', `${s.colliders} / ${mainColliders}`);
+const fitOk = (f, maxMiss = 0, maxDist = 0.17) => Number(f.split('/')[1]) <= maxMiss && Number(f.split('/')[2]) <= maxDist;
+check('world models: climbable faces sit within 0.17 m of their colliders (houses, ruin columns and walls, gate pillars; raycast)',
+  fitOk(s.fitHouses) && fitOk(s.fitColumns) && fitOk(s.fitWalls) && fitOk(s.fitGate), `houses ${s.fitHouses} columns ${s.fitColumns} walls ${s.fitWalls} gate ${s.fitGate} (rays/misses/worst m)`);
+
+// Climbing a town house and a spire: same start, same top as before the art pass.
+s = await run2(() => {
+  const g = window.game;
+  const p = g.player;
+  const until = (input, done, limit) => {
+    for (let i = 0; i < limit; i++) {
+      g.step(1, input);
+      if (done(p)) return i + 1;
+    }
+    return -1;
+  };
+  const place = (x, z) => {
+    p.respawn();
+    window.tp(x, z);
+    g.cam.yaw = 0;
+    p.facing = 0;
+  };
+  place(20, -11);
+  const climb = until({ moveY: 1 }, (q) => q.state === 'climb', 120);
+  const climbZ = p.pos.z;
+  p.stamina = 100;
+  const mantle = until({ moveY: 1 }, (q) => q.state === 'mantle', 600);
+  g.step(40);
+  const house = { climb, climbZ: +climbZ.toFixed(2), mantle, state: p.state, y: +p.pos.y.toFixed(2) };
+  place(95, 97);
+  const sClimb = until({ moveY: 1 }, (q) => q.state === 'climb', 300);
+  p.stamina = 100;
+  until({ moveY: 1 }, (q) => q.state === 'mantle' || q.state === 'air' || q.state === 'ground', 1200);
+  g.step(40);
+  const spire = { climb: sClimb, state: p.state, y: +p.pos.y.toFixed(2), top: +g.world.heightAt(95, 85).toFixed(2) };
+  p.respawn();
+  window.tp(0, 32);
+  return { house, spire };
+});
+check('world models: climbing a town house wall still works (grabs the wall at z -13.65, mantles onto the eave at 10.5 m)',
+  s.house.climb > 0 && Math.abs(s.house.climbZ + 13.65) < 0.05 && s.house.mantle > 0 && s.house.state === 'ground' && Math.abs(s.house.y - 10.5) < 0.05, JSON.stringify(s.house));
+check('world models: climbing a rock spire still works (up to its top)', s.spire.climb > 0 && s.spire.state === 'ground' && s.spire.y > s.spire.top - 0.3, JSON.stringify(s.spire));
+
+// Chests open (the model's lid swings up), campfires rest, the gate's prompt, the glider in flight, the vegetation near and far.
+s = await run2(() => {
+  const g = window.game;
+  const A = window.art;
+  const a = g.adventure;
+  const p = g.player;
+  const out = {};
+  const chest = a.chests.list.find((c) => c.id === 'meadowRock');
+  window.tp(chest.x, chest.z + 1.2);
+  g.step(1);
+  out.chestLabel = g.focus?.label;
+  const drops = g.loot.drops.length;
+  g.step(1, { held: ['interact'] });
+  g.step(1);
+  out.opened = a.chests.opened.has('meadowRock');
+  out.loot = g.loot.drops.length > drops;
+  out.lid = +chest.look.children[0].userData.lid.rotation.x.toFixed(2);
+  const fire = a.campfires.get('mill');
+  window.tp(fire.x, fire.z + 2);
+  g.step(1);
+  out.fireLabel = g.focus?.label;
+  const gate = a.gatePos();
+  window.tp(gate.x, gate.z);
+  g.step(1);
+  out.gateLabel = g.focus?.label;
+  // Glider in flight.
+  p.gliderUnlocked = true;
+  window.tp(0, 32);
+  p.pos.y += 30;
+  p.state = 'air';
+  p.vel.set(0, -2, 0);
+  g.step(1, { held: ['jump'] });
+  for (let i = 0; i < 20; i++) g.step(1, { moveY: 1 }, true);
+  out.glide = `${p.state}/${g.model.gliderLook.userData.model}/${g.model.gliderLook.parent?.visible}`;
+  p.respawn();
+  window.tp(0, 32);
+  // Vegetation at a dense spot in Gloamwood: full-detail pines near, the LOD for every tree far.
+  window.tp(-160, -40);
+  g.scenery.vegetation.update(p.pos, undefined, true);
+  const k = g.scenery.vegetation.meshes();
+  const near = (n) => k.find((x) => x.node === n)?.near ?? 0;
+  out.nearPines = near('TreeForestA') + near('TreeForestB') + near('TreeForestD');
+  out.nearRocks = near('BoulderB') + near('CragA') + near('PebbleA');
+  out.nearTrees = k.filter((x) => x.node.startsWith('Tree')).reduce((t, x) => t + x.near, 0);
+  out.farTrees = k.reduce((t, x) => t + x.far, 0);
+  // Every tree within the far range shows exactly once: near (full detail) or far (LOD).
+  out.inRange = g.world.trees.filter((t) => Math.hypot(t.x - p.pos.x, t.z - p.pos.z) < A.TREE_FAR).length;
+  out.nearInstanced = g.scenery.vegetation.group.children.filter((m) => m.visible).every((m) => m.isInstancedMesh);
+  out.vegMeshes = g.scenery.vegetation.group.children.filter((m) => m.visible && m.layers.test(g.camera.layers)).length;
+  // With the camera: the far pools keep only what is in view (and the shadow proxies only the shadow camera sees).
+  g.cam.yaw = Math.PI / 2;
+  g.step(1, null, true);
+  out.farInView = g.scenery.vegetation.meshes().reduce((t, x) => t + x.far, 0);
+  out.proxies = g.scenery.vegetation.group.children.filter((m) => m.name.endsWith(':shadow')).every((m) => m.castShadow && !m.layers.test(g.camera.layers));
+  window.tp(0, 32);
+  g.scenery.vegetation.update(p.pos, undefined, true);
+  return out;
+});
+check('world models: a chest still opens with E (loot drops, the model\'s lid swings up); campfire rest and the dungeon gate prompts are unchanged',
+  s.chestLabel === 'Open chest' && s.opened && s.loot && Math.abs(s.lid + 1.75) < 0.01 && s.fireLabel === 'Rest at Old Mill' && s.gateLabel === 'Examine the sealed door', JSON.stringify(s));
+check('world models: the glider shows its model in flight', s.glide === 'glide/true/true', s.glide);
+check('world models: trees and rocks are instanced (full detail near, LOD far: every tree in range exactly once; far pools trimmed to the view; LOD shadow proxies)',
+  s.nearPines > 15 && s.nearRocks > 2 && s.nearTrees + s.farTrees === s.inRange && s.farTrees > 500 && s.farInView > 100 && s.farInView < s.farTrees && s.proxies && s.nearInstanced && s.vegMeshes <= 20,
+  JSON.stringify({ nearPines: s.nearPines, nearRocks: s.nearRocks, nearTrees: s.nearTrees, farTrees: s.farTrees, inRange: s.inRange, farInView: s.farInView, proxies: s.proxies, vegMeshes: s.vegMeshes }));
+
+// A missing world file keeps the old look (boxes, cone trees, procedural campfires, chests, glider and home shell), without throwing.
+s = await run2(async (miss) => {
+  const g = window.game;
+  const A = window.art;
+  const a = g.adventure;
+  let threw = '';
+  const out = {};
+  try {
+    const w2 = new A.World(A.TEST_LAYOUT);
+    const sc2 = new A.Scenery(w2, miss);
+    const fires = new a.campfires.constructor(g.world, miss);
+    const chests = new a.chests.constructor(g.world, miss);
+    const pm = new A.PlayerModel(A.HUMANOID.bodies, A.HUMANOID.clips, miss);
+    const home2 = new g.home.constructor(w2, g.ui, { book() {}, sleep() {}, furnish() {}, bench() {}, message() {} }, miss);
+    await sc2.loaded;
+    await A.modelsSettled();
+    fires.animate(1);
+    chests.opened.add(chests.list[0].id);
+    chests.sync();
+    sc2.update(g.player.pos);
+    Object.assign(out, {
+      state: A.modelState(miss), ready: sc2.ready, boxes: w2.blocks.every((b) => b.mesh.visible), trees: w2.treeMeshes.every((m) => m.visible),
+      scenery: sc2.group.children.length === 1 && sc2.vegetation.group.children.length === 0,
+      fires: fires.list.every((c) => c.pit.userData.model === false && c.pit.children[0].name === 'campfire:procedural'),
+      chests: chests.list.every((c) => c.look.children[0].name === 'chest:procedural') && chests.list[0].look.children[0].userData.lid.rotation.x < -1,
+      glider: pm.gliderLook.children[0].name === 'glider:procedural',
+      home: home2.shellModel.body === null && home2.shell.every((p) => p.mesh.visible),
+    });
+  } catch (e) {
+    threw = String(e);
+  }
+  return { ...out, threw };
+}, MISSING_WORLD);
+check('world models: a missing world file keeps the boxes, cone trees, procedural campfires, chests, glider and home shell, without throwing',
+  !s.threw && s.state === 'failed' && !s.ready && s.boxes && s.trees && s.scenery && s.fires && s.chests && s.glider && s.home, JSON.stringify(s));
 
 // 36. Region enemies: levels and attack styles.
 s = await run2(() => {

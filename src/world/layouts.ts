@@ -48,6 +48,13 @@ export interface BlockSpec {
   /** Sink this far below the ground (default 1). */
   sink?: number;
   cap?: boolean;
+  /**
+   * What the block is, for its model (milestone 8): 'house' walls with its 'eave' and 'roof' slabs (same
+   * `artId`), 'well', 'column', 'ruinWall', 'gatePillar', 'gateLintel', 'gateDoor', 'stone', 'crate'.
+   * Untagged blocks keep their box.
+   */
+  art?: string;
+  artId?: number;
 }
 
 export interface Layout {
@@ -70,6 +77,8 @@ export interface Layout {
   chests: ChestSpec[];
   /** Dungeon entrance (milestone 6). */
   dungeon?: [number, number];
+  /** Rock spires in the heightmap ([x, z, height]); the world models dress their feet. */
+  spires?: [number, number, number][];
 }
 
 const GRASS = new THREE.Color('#6fa84a');
@@ -100,11 +109,11 @@ export const TEST_LAYOUT: Layout = {
     return h;
   },
   blocks: () => [
-    { cx: -22, cz: 28, w: 6, d: 6, h: 18 }, // stone tower (climbable on one full stamina bar)
-    { cx: 20, cz: 8, w: 14, d: 1.5, h: 6 }, // wall
-    { cx: 4, cz: 2, w: 1.6, d: 1.6, h: 1.0 }, // crate (vault)
-    { cx: 7, cz: 4, w: 1.6, d: 1.6, h: 2.4 }, // tall crate (climb)
-    { cx: -8, cz: 0, w: 3, d: 3, h: 4 }, // block
+    { cx: -22, cz: 28, w: 6, d: 6, h: 18, art: 'stone' }, // stone tower (climbable on one full stamina bar)
+    { cx: 20, cz: 8, w: 14, d: 1.5, h: 6, art: 'stone' }, // wall
+    { cx: 4, cz: 2, w: 1.6, d: 1.6, h: 1.0, art: 'crate' }, // crate (vault)
+    { cx: 7, cz: 4, w: 1.6, d: 1.6, h: 2.4, art: 'crate' }, // tall crate (climb)
+    { cx: -8, cz: 0, w: 3, d: 3, h: 4, art: 'stone' }, // block
   ],
   region: () => ({ id: 'test', name: 'Test Meadow', level: 1 }),
   colour(x, z, h, slope, c) {
@@ -245,20 +254,64 @@ const FOREST = new THREE.Color('#3f6e35');
 const MOSS = new THREE.Color('#2e5a2c');
 const SAND = new THREE.Color('#c2a878');
 const RUIN_ROCK = new THREE.Color('#9a8670');
-const tmp = new THREE.Color();
+
+// Region ground (milestone 8): each region reads apart at a glance. Sunmeadow is a warm yellow-green with
+// lighter flower patches, Gloamwood a dark blue-green with moss and needle-litter, the Ruins sand with rust
+// and pale stone. Cliffs and spires are layered rock (bands by height) tinted per region.
+const MEADOW_LIGHT = new THREE.Color('#a8cf5a');
+const FLOWERS = new THREE.Color('#d9d77a');
+const FOREST_DEEP = new THREE.Color('#2b5a3a');
+const LITTER = new THREE.Color('#5a5034');
+const RUST = new THREE.Color('#b8834f');
+const PALE = new THREE.Color('#d6c4a0');
+const STRATA = {
+  meadow: [new THREE.Color('#968d80'), new THREE.Color('#7e766b')],
+  forest: [new THREE.Color('#687064'), new THREE.Color('#565d53')],
+  ruins: [new THREE.Color('#b08c66'), new THREE.Color('#987552')],
+} as const;
+const tmp2 = new THREE.Color();
 
 function mainColour(x: number, z: number, h: number, slope: number, c: THREE.Color): void {
   const [m, f, ru] = regionWeights(x, z);
   const n = fbm(x * 0.15, z * 0.15, 2, 4);
-  c.copy(MEADOW).lerp(GRASS_DARK, n * 0.6).multiplyScalar(m);
-  c.add(tmp.copy(FOREST).lerp(MOSS, n).multiplyScalar(f));
-  c.add(tmp.copy(SAND).lerp(RUIN_ROCK, n).multiplyScalar(ru));
+  const patch = fbm(x * 0.05, z * 0.05, 2, 13);
+  // Meadow: grass with lighter patches and pale flower speckle.
+  tmp2.copy(MEADOW).lerp(GRASS_DARK, n * 0.5).lerp(MEADOW_LIGHT, smoothstep(0.55, 0.75, patch) * 0.6);
+  tmp2.lerp(FLOWERS, smoothstep(0.78, 0.9, fbm(x * 0.4, z * 0.4, 1, 3)) * 0.45);
+  c.copy(tmp2).multiplyScalar(m);
+  // Gloamwood: deep blue-green with moss and needle litter.
+  tmp2.copy(FOREST).lerp(FOREST_DEEP, n).lerp(MOSS, smoothstep(0.5, 0.7, patch) * 0.6).lerp(LITTER, smoothstep(0.62, 0.8, fbm(x * 0.09, z * 0.09, 2, 17)) * 0.55);
+  c.add(tmp2.multiplyScalar(f));
+  // Ruins: sand, rust patches and pale flagstone.
+  tmp2.copy(SAND).lerp(RUIN_ROCK, n * 0.7).lerp(RUST, smoothstep(0.55, 0.75, patch) * 0.5).lerp(PALE, smoothstep(0.7, 0.85, fbm(x * 0.12, z * 0.12, 2, 23)) * 0.5);
+  c.add(tmp2.multiplyScalar(ru));
   const rd = roadDist(x, z);
   if (rd < 3.5) c.lerp(DIRT, 1 - smoothstep(2, 3.5, rd));
   const r = Math.hypot(x, z);
   if (r < TOWN_R) c.lerp(TOWN_STONE, (1 - smoothstep(TOWN_R - 14, TOWN_R, r)) * (0.5 + 0.3 * n));
-  c.lerp(ROCK, smoothstep(0.75, 1.25, slope));
-  if (h > 45) c.lerp(SNOW, smoothstep(45, 55, h) * (1 - smoothstep(0.9, 1.4, slope)));
+  // Layered rock on steep ground (and on rock spires, including their flat tops): bands about 1.6 m apart.
+  let onSpire = false;
+  let spireBlend = 0;
+  for (const [sx, sz] of SPIRES) {
+    const d = Math.hypot(x - sx, z - sz);
+    if (d < 7) {
+      onSpire = true;
+      spireBlend = Math.max(spireBlend, 1 - smoothstep(4.5, 6.8, d));
+    }
+  }
+  const steep = Math.max(smoothstep(0.75, 1.25, slope), spireBlend);
+  if (steep > 0) {
+    const band = (h + fbm(x * 0.08, z * 0.08, 2, 29) * 3) / 2.2;
+    const t = smoothstep(0.35, 0.65, Math.abs((band - Math.floor(band)) * 2 - 1));
+    const rock = tmp2.set(0, 0, 0);
+    for (const [k, w] of [['meadow', m], ['forest', f], ['ruins', ru]] as const) {
+      rock.r += (STRATA[k][0].r + (STRATA[k][1].r - STRATA[k][0].r) * t) * w;
+      rock.g += (STRATA[k][0].g + (STRATA[k][1].g - STRATA[k][0].g) * t) * w;
+      rock.b += (STRATA[k][0].b + (STRATA[k][1].b - STRATA[k][0].b) * t) * w;
+    }
+    c.lerp(rock, steep);
+  }
+  if (!onSpire && h > 45) c.lerp(SNOW, smoothstep(45, 55, h) * (1 - smoothstep(0.9, 1.4, slope)));
 }
 
 /** Town buildings, ruins and the dungeon gate. */
@@ -273,13 +326,13 @@ function mainBlocks(heightAt: (x: number, z: number) => number): BlockSpec[] {
     [12, 24, 9, 7, 0xd9c8a5],
     [-6, -28, 12, 8, 0xc9b38c],
   ];
-  for (const [cx, cz, w, d, col] of houses) {
-    out.push({ cx, cz, w, d, h: 4, color: col, cap: false });
-    out.push({ cx, cz, w: w + 1, d: d + 1, h: 0.5, base: TOWN_H + 4, color: 0xa8432f, cap: false });
-    out.push({ cx, cz, w: w - 2, d: d - 2, h: 1.2, base: TOWN_H + 4.5, color: 0x8f3626, cap: false });
-  }
+  houses.forEach(([cx, cz, w, d, col], i) => {
+    out.push({ cx, cz, w, d, h: 4, color: col, cap: false, art: 'house', artId: i });
+    out.push({ cx, cz, w: w + 1, d: d + 1, h: 0.5, base: TOWN_H + 4, color: 0xa8432f, cap: false, art: 'eave', artId: i });
+    out.push({ cx, cz, w: w - 2, d: d - 2, h: 1.2, base: TOWN_H + 4.5, color: 0x8f3626, cap: false, art: 'roof', artId: i });
+  });
   // Well in the square.
-  out.push({ cx: 0, cz: -6, w: 2.2, d: 2.2, h: 1, color: 0x8a8070 });
+  out.push({ cx: 0, cz: -6, w: 2.2, d: 2.2, h: 1, color: 0x8a8070, art: 'well' });
 
   // Ruins: broken walls and columns scattered over the north.
   let seed = 11;
@@ -291,20 +344,20 @@ function mainBlocks(heightAt: (x: number, z: number) => number): BlockSpec[] {
     const z = Math.cos(a) * r;
     if (regionAt(x, z).id !== 'ruins') continue;
     const col = rand() < 0.5;
-    if (col) out.push({ cx: x, cz: z, w: 1.4, d: 1.4, h: 3 + rand() * 6, color: 0xb9ab92 });
+    if (col) out.push({ cx: x, cz: z, w: 1.4, d: 1.4, h: 3 + rand() * 6, color: 0xb9ab92, art: 'column' });
     else {
       const long = 4 + rand() * 8;
       const alongX = rand() < 0.5;
-      out.push({ cx: x, cz: z, w: alongX ? long : 1, d: alongX ? 1 : long, h: 1.5 + rand() * 3, color: 0xa99a80 });
+      out.push({ cx: x, cz: z, w: alongX ? long : 1, d: alongX ? 1 : long, h: 1.5 + rand() * 3, color: 0xa99a80, art: 'ruinWall' });
     }
   }
   // Dungeon gate (opens in milestone 6).
   const [gx, gz] = [160, -215];
   const gy = heightAt(gx, gz);
-  out.push({ cx: gx - 3.5, cz: gz, w: 2, d: 3, h: 8, color: 0x6e6658 });
-  out.push({ cx: gx + 3.5, cz: gz, w: 2, d: 3, h: 8, color: 0x6e6658 });
-  out.push({ cx: gx, cz: gz, w: 9, d: 3, h: 1.6, base: gy + 7, color: 0x5a5348 });
-  out.push({ cx: gx, cz: gz - 1.2, w: 5, d: 0.5, h: 6.5, color: 0x2a2420 });
+  out.push({ cx: gx - 3.5, cz: gz, w: 2, d: 3, h: 8, color: 0x6e6658, art: 'gatePillar' });
+  out.push({ cx: gx + 3.5, cz: gz, w: 2, d: 3, h: 8, color: 0x6e6658, art: 'gatePillar' });
+  out.push({ cx: gx, cz: gz, w: 9, d: 3, h: 1.6, base: gy + 7, color: 0x5a5348, art: 'gateLintel' });
+  out.push({ cx: gx, cz: gz - 1.2, w: 5, d: 0.5, h: 6.5, color: 0x2a2420, art: 'gateDoor' });
   return out;
 }
 
@@ -359,11 +412,13 @@ export const MAIN_LAYOUT: Layout = {
   colour: mainColour,
   treeDensity(x, z, h) {
     const r = Math.hypot(x, z);
-    if (r < TOWN_R + 8 || roadDist(x, z) < 4 || h > 48) return 0;
+    if (r < TOWN_R + 8 || roadDist(x, z) < 5.5 || h > 48) return 0;
     const [m, f, ru] = regionWeights(x, z);
-    return m * 0.12 + f * 0.9 + ru * 0.03;
+    // Thin Gloamwood with soft glades so roads, camps and enemies read clearly from above.
+    const glade = 0.7 + 0.3 * smoothstep(0.35, 0.7, fbm(x * 0.025, z * 0.025, 2, 55));
+    return m * 0.14 + f * 0.44 * glade + ru * 0.035;
   },
-  maxTrees: 4500,
+  maxTrees: 2700,
   camps: mainCamps(),
   campfires: [
     { id: 'town', name: 'Town Square', x: 0, z: 5 },
@@ -382,4 +437,5 @@ export const MAIN_LAYOUT: Layout = {
     { id: 'edgeCliff', x: -40, z: 240, tier: 0 },
   ],
   dungeon: [160, -219],
+  spires: SPIRES,
 };

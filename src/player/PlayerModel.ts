@@ -7,7 +7,8 @@ import { CLASSES, type ClassId } from '../classes/classes';
 import { TUNING } from '../config';
 import { cloneModel, cloneNode, loadModel, modelClips, modelState } from '../core/models';
 import { Rig } from '../core/rig';
-import { ATTACK_CLIPS, HEAD_ART, HUMANOID, SKILL_CLIPS, type SwingClip } from '../art/assets';
+import { ATTACK_CLIPS, HEAD_ART, HUMANOID, SKILL_CLIPS, WORLD_FILE, type SwingClip } from '../art/assets';
+import { loadWorldFile, worldNode } from '../world/worldModels';
 
 const AXIS_X = new THREE.Vector3(1, 0, 0);
 /** Height (m) of the point the rigged body flips around in a roll: the middle of the tucked body. */
@@ -129,6 +130,8 @@ export class PlayerModel {
   private legL = new THREE.Group();
   private legR = new THREE.Group();
   private glider = new THREE.Group();
+  /** The glider's look: the world file's model, or the cloth-on-poles boxes until it loads (or if it fails). */
+  readonly gliderLook: THREE.Group;
   /** Gear holders, filled from the equipped items (moved onto the rig's bones when it is shown). */
   private sword = new THREE.Group();
   private shield = new THREE.Group();
@@ -165,7 +168,8 @@ export class PlayerModel {
   private airTurned = false;
 
   /** `bodies` can be swapped out by tests (e.g. a missing file to check the fallback). */
-  constructor(private bodies: Record<ClassId, string> = HUMANOID.bodies, private clips = HUMANOID.clips) {
+  /** `worldFile` holds the glider (tests pass a missing one to check the fallback). */
+  constructor(private bodies: Record<ClassId, string> = HUMANOID.bodies, private clips = HUMANOID.clips, worldFile = WORLD_FILE) {
     const skin = toonMaterial(0xf0c39a);
     const tunic = toonMaterial(0x3f6fb5);
     this.tunicMat = tunic;
@@ -222,23 +226,27 @@ export class PlayerModel {
     limb(this.legR, 0.14, -0.12, 0.8, 0.2, pants);
     this.mountBlocky();
 
-    // Glider: a cloth wing on two poles, held above the head.
-    const cloth = new THREE.Mesh(
-      new THREE.BoxGeometry(2.4, 0.05, 1.0),
-      toonMaterial(0xc9473a, { side: THREE.DoubleSide }),
-    );
-    cloth.castShadow = true;
-    addOutline(cloth, 0.04);
-    cloth.position.y = 1.15;
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(2.42, 0.06, 0.18), toonMaterial(0xf2d16b));
-    stripe.position.y = 1.15;
-    this.glider.add(cloth, stripe);
-    for (const x of [-0.35, 0.35]) {
-      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.75, 5), belt);
-      pole.position.set(x, 0.8, 0);
-      pole.rotation.z = x > 0 ? -0.3 : 0.3;
-      this.glider.add(pole);
-    }
+    // Glider: a cloth wing on two poles, held above the head (the world file's model once it loads).
+    const gliderBoxes = () => {
+      const g = new THREE.Group();
+      g.name = 'glider:procedural';
+      const cloth = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.05, 1.0), toonMaterial(0xc9473a, { side: THREE.DoubleSide }));
+      cloth.castShadow = true;
+      addOutline(cloth, 0.04);
+      cloth.position.y = 1.15;
+      const stripe = new THREE.Mesh(new THREE.BoxGeometry(2.42, 0.06, 0.18), toonMaterial(0xf2d16b));
+      stripe.position.y = 1.15;
+      g.add(cloth, stripe);
+      for (const x of [-0.35, 0.35]) {
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.75, 5), belt);
+        pole.position.set(x, 0.8, 0);
+        pole.rotation.z = x > 0 ? -0.3 : 0.3;
+        g.add(pole);
+      }
+      return g;
+    };
+    this.gliderLook = lazyModel(worldFile, () => worldNode('Glider', worldFile), gliderBoxes, (f) => loadWorldFile(f));
+    this.glider.add(this.gliderLook);
     this.glider.position.y = 0.6;
     this.glider.visible = false;
     this.body.add(this.glider);

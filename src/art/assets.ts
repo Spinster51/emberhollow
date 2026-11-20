@@ -626,3 +626,138 @@ export const NPC_ANIM_RANGE = 40;
  * and animates every other frame; 0.5 m of slack each way keeps it from flickering at the edge.
  */
 export const NPC_DETAIL_RANGE = 20;
+
+// ---------------------------------------------------------------- world: props and environment (milestone 8)
+
+/**
+ * The overworld's props and environment: vegetation, rocks, the building kit (town houses and the home's
+ * shell), ruins, the dungeon gate, the well, chests, campfires, camp and town dressing, and the glider.
+ * One file on one 512 px palette atlas (KayKit Forest Nature, Medieval Hexagon, Dungeon Remastered and
+ * Halloween Bits palettes); material `World`, plus `WorldGlow` for the few parts that glow.
+ */
+export const WORLD_FILE = 'models/world/world.glb';
+
+/** Outline widths for nodes cloned whole from the world file (everything else is merged by the game). */
+export const WORLD_OUTLINE: Record<string, number> = {
+  ChestBody: 0.025, ChestLid: 0.025, ChestGoldBody: 0.025, ChestGoldLid: 0.025, Campfire: 0.025, Glider: 0.03,
+};
+
+export type VegRegion = 'meadow' | 'forest' | 'ruins';
+
+/** A scattered piece: its node, an optional far LOD node, how often it is picked and its scale range. */
+export interface ScatterPiece {
+  node: string;
+  lod?: string;
+  weight: number;
+  scale: [number, number];
+  /** Sink this far into the ground (fraction of its height), so rocks sit in the soil. */
+  sink?: number;
+}
+
+/**
+ * Trees per region (the scatter positions are the old trees'; each region picks its own kinds). Few kinds on
+ * purpose: every kind costs a draw call or two wherever it is in view, so variety comes from scale, turn and tint.
+ */
+export const TREE_ART: Record<VegRegion, ScatterPiece[]> = {
+  meadow: [
+    { node: 'TreeMeadowA', lod: 'TreeMeadowA_LOD', weight: 1, scale: [0.95, 1.35] },
+    { node: 'TreeMeadowB', lod: 'TreeMeadowB_LOD', weight: 1, scale: [0.9, 1.3] },
+  ],
+  forest: [
+    { node: 'TreeForestA', lod: 'TreeForestA_LOD', weight: 1, scale: [0.95, 1.4] },
+    { node: 'TreeForestB', lod: 'TreeForestB_LOD', weight: 1, scale: [0.9, 1.35] },
+  ],
+  ruins: [
+    { node: 'TreeRuinsA', lod: 'TreeRuinsA_LOD', weight: 3, scale: [0.9, 1.3] },
+    { node: 'TreeRuinsC', lod: 'TreeRuinsC_LOD', weight: 2, scale: [0.9, 1.2] },
+  ],
+};
+
+/** Instance tints per region (multiply the atlas): bright warm meadow, dark blue-green wood, dry ruins. */
+export const VEG_TINT: Record<VegRegion, [number, number, number]> = {
+  meadow: [1.08, 1.1, 0.82],
+  forest: [0.58, 0.74, 0.7],
+  ruins: [1.05, 0.95, 0.82],
+};
+
+/** Ground cover and rocks scattered by region density; `range` = drawn within this distance of the player. */
+export interface ScatterLayer {
+  id: string;
+  /** Instances on the main map (the test map gets a tenth). */
+  count: number;
+  /** Density 0..1 per region. */
+  density: Record<VegRegion, number>;
+  pieces: Partial<Record<VegRegion, ScatterPiece[]>>;
+  range: number;
+  maxSlope: number;
+  shadow: boolean;
+}
+
+export const SCATTER_ART: ScatterLayer[] = [
+  {
+    id: 'grass', count: 4800, density: { meadow: 1, forest: 0.55, ruins: 0.2 }, range: 24, maxSlope: 0.7, shadow: false,
+    pieces: {
+      meadow: [{ node: 'Grass', weight: 1, scale: [0.8, 1.4] }],
+      forest: [{ node: 'Grass', weight: 1, scale: [0.9, 1.5] }],
+      ruins: [{ node: 'GrassB', weight: 1, scale: [0.7, 1.1] }],
+    },
+  },
+  {
+    id: 'bush', count: 1100, density: { meadow: 0.45, forest: 1, ruins: 0.3 }, range: 34, maxSlope: 0.65, shadow: false,
+    pieces: {
+      meadow: [{ node: 'BushMeadow', weight: 1, scale: [0.8, 1.4] }],
+      forest: [{ node: 'BushForest', weight: 1, scale: [0.7, 1.25] }],
+      ruins: [{ node: 'BushRuins', weight: 1, scale: [0.8, 1.4] }],
+    },
+  },
+  {
+    id: 'pebble', count: 600, density: { meadow: 0.35, forest: 0.45, ruins: 1 }, range: 28, maxSlope: 1.0, shadow: false,
+    pieces: {
+      meadow: [{ node: 'PebbleA', weight: 1, scale: [0.35, 0.7], sink: 0.2 }],
+      forest: [{ node: 'PebbleA', weight: 1, scale: [0.35, 0.75], sink: 0.2 }],
+      ruins: [{ node: 'PebbleA', weight: 1, scale: [0.4, 0.9], sink: 0.2 }],
+    },
+  },
+  {
+    id: 'boulder', count: 400, density: { meadow: 0.25, forest: 0.45, ruins: 1 }, range: 70, maxSlope: 1.1, shadow: false,
+    pieces: {
+      meadow: [{ node: 'BoulderB', weight: 1, scale: [0.8, 1.15], sink: 0.2 }],
+      forest: [{ node: 'BoulderB', weight: 1, scale: [0.8, 1.1], sink: 0.2 }],
+      ruins: [{ node: 'CragA', weight: 1, scale: [0.8, 1.25], sink: 0.2 }],
+    },
+  },
+];
+
+/** Rock tints per region (grey stone in the meadow and wood, sandstone in the ruins). */
+export const ROCK_TINT: Record<VegRegion, [number, number, number]> = {
+  meadow: [1, 1, 0.97],
+  forest: [0.78, 0.86, 0.84],
+  ruins: [1.25, 1.02, 0.78],
+};
+
+/** Full-detail trees within this distance of the player; past it, the low-poly LOD (up to `TREE_FAR`, near fog end). */
+export const TREE_NEAR = 26;
+export const TREE_FAR = 220;
+/** Camp and town dressing are drawn within this distance. */
+export const PROP_RANGE = 115;
+/** Camp dressing keeps its outline within this distance (thinner than a pixel past it). */
+export const PROP_OUTLINE_RANGE = 45;
+
+/** Camp dressing per enemy kind: [node, count]; placed around the camp at 3.8–6.8 m, facing its middle. */
+export const CAMP_ART: Partial<Record<string, [string, number][]>> = {
+  bandit: [['Tent', 2], ['CrateBig', 2], ['CrateSmall', 2], ['Barrel', 2], ['Sack', 1], ['WeaponRack', 1], ['Flag', 2], ['FenceWood', 2], ['Lumber', 1], ['Target', 1]],
+  goblin: [['Tent', 2], ['CrateBig', 1], ['CrateSmall', 2], ['Sack', 2], ['PostSkull', 2], ['Bones', 1], ['FenceWood', 3], ['Flag', 1], ['BannerTorn', 1]],
+  skeleton: [['Gravestone', 3], ['Grave', 1], ['PillarBroken', 2], ['BannerTorn', 1], ['Bones', 2], ['Skull', 1]],
+  cultist: [['Shrine', 1], ['Candles', 3], ['Banner', 2], ['Skull', 2], ['PostSkull', 1]],
+  golem: [['RubbleBig', 1], ['Rubble', 2], ['PillarBroken', 1]],
+  wolf: [['Bones', 2], ['BonesB', 1], ['Ribcage', 1], ['Skull', 1]],
+  spider: [['Bones', 2], ['Ribcage', 1], ['Skull', 2]],
+  boar: [['Lumber', 1], ['BonesB', 1]],
+};
+
+/** Exploration chests: body and lid nodes, the lid's hinge (from the body's origin) and how far it opens. Tier 1 chests are gilded. */
+export const CHEST_ART = {
+  normal: { body: 'ChestBody', lid: 'ChestLid', hinge: [0, 0.2706, -0.3057] as [number, number, number] },
+  gold: { body: 'ChestGoldBody', lid: 'ChestGoldLid', hinge: [0, 0.2706, -0.3057] as [number, number, number] },
+  open: -1.75,
+};

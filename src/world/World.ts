@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mulberry32 } from '../core/noise';
 import { toonMaterial } from '../core/toon';
 import { TUNING } from '../config';
-import { TEST_LAYOUT, type Layout, type Region } from './layouts';
+import { TEST_LAYOUT, type BlockSpec, type Layout, type Region } from './layouts';
 
 /** Axis-aligned solid block (towers, walls, crates, buildings). Every side is climbable. */
 export interface Box {
@@ -18,6 +18,24 @@ export interface Box {
   zone?: string;
 }
 
+/** A block added from the layout: its collider, its procedural mesh (and cap), and the layout's art tag. */
+export interface LayoutBlock {
+  spec: BlockSpec;
+  box: Box;
+  mesh: THREE.Mesh;
+  cap: THREE.Mesh | null;
+}
+
+/** A tree spot from the scatter (the procedural trees, and the models that replace them). */
+export interface TreeSpot {
+  x: number;
+  y: number;
+  z: number;
+  /** Scale of the old tree (0.8–1.4). */
+  k: number;
+  rot: number;
+}
+
 export interface WallHit {
   /** Horizontal outward normal of the wall. */
   normal: THREE.Vector3;
@@ -27,13 +45,14 @@ export interface WallHit {
 }
 
 const RES = 1;
-const CHUNK = 50;
+/** Terrain chunk size in cells: 100 m keeps the terrain to a few dozen draw calls on the 600 m map. */
+const CHUNK = 100;
 const CELL = 16;
 
 /**
  * Heightmap terrain plus solid blocks, built from a layout (the small test map or the 600 m
  * main map). Height queries match the rendered triangles exactly. The terrain is split into
- * 50 m chunks so the camera's far plane culls distant ground.
+ * 100 m chunks so the camera's far plane culls distant ground.
  */
 export class World {
   readonly size: number;
@@ -47,6 +66,17 @@ export class World {
   readonly group = new THREE.Group();
   readonly spawn: THREE.Vector3;
   readonly homeSite: THREE.Vector3;
+  /** Layout blocks with their meshes (the world models replace the boxes' look, never the colliders). */
+  readonly blocks: LayoutBlock[] = [];
+  /** Tree spots, and the procedural trees drawn there until (or unless) the tree models load. */
+  readonly trees: TreeSpot[] = [];
+  readonly treeMeshes: THREE.InstancedMesh[] = [];
+  /** Spots ground cover and rocks keep clear of: [x, z, radius] (campfires, chests, the dungeon gate). */
+  readonly scatterAvoid: [number, number, number][] = [];
+  /** Spots trees keep clear of: [x, z, radius] (campfires, chests, enemy camps, dungeon gate, home). */
+  readonly treeAvoid: [number, number, number][] = [];
+  /** Clustered enemy camp centres: [x, z] (bushes and trees keep clear so camps read cleanly). */
+  readonly campCentres: [number, number][] = [];
 
   constructor(readonly layout: Layout = TEST_LAYOUT) {
     this.size = layout.size;
@@ -65,6 +95,34 @@ export class World {
     this.addBlocks();
     this.spawn.y = this.groundAt(this.spawn.x, this.spawn.z, 1e9);
     this.buildTerrain();
+    for (const c of layout.campfires) {
+      this.scatterAvoid.push([c.x, c.z, 3.5]);
+      this.treeAvoid.push([c.x, c.z, 6.5]);
+    }
+    for (const c of layout.chests) {
+      this.scatterAvoid.push([c.x, c.z, 3.0]);
+      this.treeAvoid.push([c.x, c.z, 6.5]);
+    }
+    if (layout.dungeon) {
+      this.scatterAvoid.push([layout.dungeon[0], layout.dungeon[1] + 3, 11]);
+      this.treeAvoid.push([layout.dungeon[0], layout.dungeon[1] + 3, 13]);
+    }
+    const clusters: { kind: string; x: number; z: number; n: number }[] = [];
+    for (const c of layout.camps) {
+      const near = clusters.find((o) => o.kind === c.kind && Math.hypot(o.x / o.n - c.x, o.z / o.n - c.z) < 7);
+      if (near) {
+        near.x += c.x;
+        near.z += c.z;
+        near.n++;
+      } else clusters.push({ kind: c.kind, x: c.x, z: c.z, n: 1 });
+    }
+    for (const cl of clusters) {
+      const cx = cl.x / cl.n;
+      const cz = cl.z / cl.n;
+      this.campCentres.push([cx, cz]);
+      this.treeAvoid.push([cx, cz, 13.5]);
+    }
+    this.treeAvoid.push([layout.homeSite[0], layout.homeSite[1], 14]);
     this.scatterTrees();
   }
 
@@ -92,12 +150,14 @@ export class World {
       const color = s.color ?? 0xa59a8c;
       if (!mats.has(color)) mats.set(color, toonMaterial(color));
       const m = this.addSolid(box, mats.get(color)!);
+      let top: THREE.Mesh | null = null;
       if (s.cap !== false && s.color === undefined) {
-        const top = new THREE.Mesh(new THREE.BoxGeometry(s.w + 0.2, 0.25, s.d + 0.2), cap);
+        top = new THREE.Mesh(new THREE.BoxGeometry(s.w + 0.2, 0.25, s.d + 0.2), cap);
         top.position.set(m.position.x, box.maxY - 0.1, m.position.z);
         top.castShadow = true;
         this.group.add(top);
       }
+      this.blocks.push({ spec: s, box, mesh: m, cap: top });
     }
   }
 
@@ -267,6 +327,13 @@ export class World {
 
   /** Terrain in chunks, with normals from the heightmap so chunk edges match. */
   private buildTerrain(): void {
+    this.group.add(...this.terrainChunks(CHUNK));
+  }
+
+  /** The terrain meshes in square chunks of `size` cells (tests compare chunk sizes). */
+  terrainChunks(size: number): THREE.Mesh[] {
+    const out: THREE.Mesh[] = [];
+    const CHUNK = size;
     const N = this.n;
     const mat = toonMaterial(0xffffff, { vertexColors: true });
     const c = new THREE.Color();
@@ -321,9 +388,12 @@ export class World {
         const mesh = new THREE.Mesh(geo, mat);
         mesh.receiveShadow = true;
         mesh.name = 'terrain';
-        this.group.add(mesh);
+        mesh.matrixAutoUpdate = false;
+        mesh.updateMatrix();
+        out.push(mesh);
       }
     }
+    return out;
   }
 
   private scatterTrees(): void {
@@ -346,8 +416,11 @@ export class World {
       if (rand() > this.layout.treeDensity(x, z, y)) continue;
       if (this.slopeAt(x, z) > 0.5) continue;
       if (this.groundAt(x, z, 1e9) - y > 0.1) continue; // not on boxes
+      if (this.treeAvoid.some(([ax, az, ar]) => (x - ax) ** 2 + (z - az) ** 2 < ar * ar)) continue;
       const k = 0.8 + rand() * 0.6;
-      q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), rand() * Math.PI);
+      const rot = rand() * Math.PI;
+      q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot);
+      this.trees.push({ x, y, z, k, rot });
       s.set(k, k, k);
       m.compose(new THREE.Vector3(x, y + 0.8 * k, z), q, s);
       trunks.setMatrixAt(count, m);
@@ -360,6 +433,8 @@ export class World {
     }
     trunks.count = leaves.count = count;
     trunks.castShadow = leaves.castShadow = true;
+    trunks.name = leaves.name = 'trees:procedural';
+    this.treeMeshes.push(trunks, leaves);
     this.group.add(trunks, leaves);
   }
 }

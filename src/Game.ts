@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { Input, type VirtualInput } from './core/Input';
 import { World } from './world/World';
+import { Scenery } from './world/Scenery';
+import { SHADOW_LAYER } from './world/Vegetation';
 import { Player } from './player/Player';
 import { PlayerModel } from './player/PlayerModel';
 import { ThirdPersonCamera } from './camera/ThirdPersonCamera';
@@ -33,6 +35,8 @@ export class Game {
   readonly camera = new THREE.PerspectiveCamera(60, 1, 0.1, 600);
   readonly input: Input;
   readonly world: World;
+  /** The world's models (milestone 8): buildings, ruins, gate, vegetation, camp and town dressing. */
+  readonly scenery: Scenery;
   readonly player: Player;
   readonly model = new PlayerModel();
   readonly cam: ThirdPersonCamera;
@@ -102,11 +106,15 @@ export class Game {
     sc.near = 1;
     sc.far = 200;
     this.sun.shadow.bias = -0.0008;
+    // The shadow camera also sees the tree shadow proxies (low-poly casters the main camera never draws).
+    this.sun.shadow.camera.layers.enable(SHADOW_LAYER);
     this.scene.add(this.sun, this.sun.target);
 
     this.input = new Input(canvas);
     this.world = new World(layout);
     this.scene.add(this.world.group);
+    this.scenery = new Scenery(this.world);
+    this.scene.add(this.scenery.group);
     this.player = new Player(this.world);
     this.scene.add(this.model.root);
     this.enemies = new Enemies(this.world);
@@ -473,6 +481,8 @@ export class Game {
     this.loot.animate(performance.now() / 1000);
     this.adventure.render(performance.now() / 1000);
     this.map.update();
+    this.scenery.update(this.player.pos, this.camera);
+    this.home.updateOutlines(this.player.pos, this.camera);
     // Keep the shadow area centred on the player.
     const p = this.player.pos;
     this.sun.position.set(p.x + 30, p.y + 60, p.z + 20);

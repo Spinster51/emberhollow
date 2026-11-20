@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import { toonMaterial } from '../core/toon';
+import { lazyModel } from '../items/ItemMesh';
+import { WORLD_FILE } from '../art/assets';
+import { loadWorldFile, worldNode } from './worldModels';
 import type { CampfireSpec } from './layouts';
 import type { World } from './World';
 import type { Interactable } from '../loot/Loot';
@@ -7,6 +10,8 @@ import type { Interactable } from '../loot/Loot';
 export interface Campfire extends CampfireSpec {
   pos: THREE.Vector3;
   flame: THREE.Mesh;
+  /** Stones and logs: the world file's model once it loads, boxes until then (or for good if it fails). */
+  pit: THREE.Group;
 }
 
 const DISCOVER = 9;
@@ -23,35 +28,23 @@ export class Campfires {
   /** Newly discovered this step (HUD toast). */
   readonly news: Campfire[] = [];
 
-  constructor(world: World) {
-    const stone = toonMaterial(0x7d7468);
-    const log = toonMaterial(0x5b3a20);
+  /** `file` can be swapped by tests (a missing file keeps the boxes). */
+  constructor(world: World, file = WORLD_FILE) {
     const fire = new THREE.MeshBasicMaterial({ color: 0xffa63a });
     const core = new THREE.MeshBasicMaterial({ color: 0xffe08a });
     for (const spec of world.layout.campfires) {
       const pos = new THREE.Vector3(spec.x, world.groundAt(spec.x, spec.z, 1e9), spec.z);
       const g = new THREE.Group();
       g.position.copy(pos);
-      for (let i = 0; i < 8; i++) {
-        const a = (i / 8) * Math.PI * 2;
-        const s = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.22, 0.3), stone);
-        s.position.set(Math.cos(a) * 0.75, 0.1, Math.sin(a) * 0.75);
-        s.rotation.y = a;
-        g.add(s);
-      }
-      for (const a of [0.3, 1.9]) {
-        const l = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.16, 0.16), log);
-        l.position.y = 0.12;
-        l.rotation.y = a;
-        g.add(l);
-      }
+      const pit = lazyModel(file, () => worldNode('Campfire', file), proceduralPit, (f) => loadWorldFile(f));
+      g.add(pit);
       const flame = new THREE.Mesh(new THREE.ConeGeometry(0.35, 0.9, 6), fire);
       flame.position.y = 0.6;
       const inner = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.55, 5), core);
       inner.position.y = 0.45;
       g.add(flame, inner);
       this.group.add(g);
-      this.list.push({ ...spec, pos, flame });
+      this.list.push({ ...spec, pos, flame, pit });
     }
   }
 
@@ -83,4 +76,26 @@ export class Campfires {
       .filter((c) => c.pos.distanceTo(playerPos) < 3)
       .map((c) => ({ pos: c.pos, radius: 2.6, label: `Rest at ${c.name}`, color: '#ffb25a', act: () => use(c) }));
   }
+}
+
+/** The placeholder fire pit built from boxes: a ring of stones and two crossed logs. */
+function proceduralPit(): THREE.Object3D {
+  const g = new THREE.Group();
+  g.name = 'campfire:procedural';
+  const stone = toonMaterial(0x7d7468);
+  const log = toonMaterial(0x5b3a20);
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const s = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.22, 0.3), stone);
+    s.position.set(Math.cos(a) * 0.75, 0.1, Math.sin(a) * 0.75);
+    s.rotation.y = a;
+    g.add(s);
+  }
+  for (const a of [0.3, 1.9]) {
+    const l = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.16, 0.16), log);
+    l.position.y = 0.12;
+    l.rotation.y = a;
+    g.add(l);
+  }
+  return g;
 }
